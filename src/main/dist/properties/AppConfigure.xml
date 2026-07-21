@@ -1,0 +1,56 @@
+<!DOCTYPE beans PUBLIC "-//SPRING//DTD BEAN//EN" "http://www.springframework.org/dtd/spring-beans.dtd">
+<beans>
+    <bean id="dao" class="edu.mcw.rgd.chatBotEmbed.DAO"/>
+
+    <bean id="geneReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.GeneReportGenerator">
+        <constructor-arg ref="dao"/>
+    </bean>
+
+    <!--
+      "-mode embed": chunk the generated markdown and write vectors to the Postgres
+      document_embeddings table (rgdcore's "rgdRag" datasource, configured in the same
+      connections file as the Oracle datasource).
+
+      CRITICAL: model + dimensions MUST match the chatbot's embedding model
+      (its spring.ai.*.embedding settings). Vectors from a different model are not
+      comparable to the chatbot's query vectors, so a mismatch silently ruins retrieval.
+      The API key is read from the named environment variable, never committed.
+    -->
+    <bean id="embedService" class="edu.mcw.rgd.chatBotEmbed.embed.EmbedService">
+        <property name="provider" value="openai"/>                       <!-- openai | ollama -->
+        <property name="baseUrl" value="https://api.openai.com/v1"/>
+        <property name="model" value="text-embedding-3-small"/>          <!-- MUST match the chatbot -->
+        <property name="dimensions" value="1536"/>                       <!-- MUST match the chatbot -->
+
+        <!-- API key: read from a file containing ONLY the key (kept out of git, like the
+             connections file). If apiKeyFile is blank, falls back to the apiKeyEnv env var. -->
+        <property name="apiKeyFile" value="properties/openai.key"/>
+        <property name="apiKeyEnv" value="OPENAI_API_KEY"/>
+
+        <property name="threadCount" value="2"/>
+    </bean>
+
+    <bean id="manager" class="edu.mcw.rgd.chatBotEmbed.Manager">
+        <property name="version" value="RGD AI chatbot RAG markdown generator -- build Jul 15, 2026"/>
+
+        <!-- Must match the chatbot's report.loader.output-dir so BulkEmbedService sees the files. -->
+        <property name="outputDir" value="data/rgd-ai-chatbot/markdown"/>
+
+        <property name="threadCount" value="5"/>
+
+        <!-- Default assemblies for Position sections; override per-run with -mapKeys.
+             Fill in the real rat map keys (e.g. GRCr8, mRatBN7.2). Empty = show ALL of each
+             gene's mapped positions on genome assemblies of its own species. -->
+        <property name="defaultAssemblyMapKeys" value=""/>
+
+        <property name="generators">
+            <list>
+                <ref bean="geneReportGenerator"/>
+                <!-- add qtlReportGenerator, strainReportGenerator, ... here -->
+            </list>
+        </property>
+
+        <property name="embedService" ref="embedService"/>
+    </bean>
+
+</beans>
