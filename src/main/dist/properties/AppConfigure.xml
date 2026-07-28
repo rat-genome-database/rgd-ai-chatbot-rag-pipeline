@@ -6,6 +6,10 @@
         <constructor-arg ref="dao"/>
     </bean>
 
+    <bean id="qtlReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.QtlReportGenerator">
+        <constructor-arg ref="dao"/>
+    </bean>
+
     <!--
       "-mode embed": chunk the generated markdown and write vectors to the Postgres
       document_embeddings table (rgdcore's "rgdRag" datasource, configured in the same
@@ -34,7 +38,7 @@
         <property name="version" value="RGD AI chatbot RAG markdown generator -- build Jul 15, 2026"/>
 
         <!-- Must match the chatbot's report.loader.output-dir so BulkEmbedService sees the files. -->
-        <property name="outputDir" value="data/rgd-ai-chatbot/markdown"/>
+        <property name="outputDir" value="data/markdown"/>
 
         <property name="threadCount" value="5"/>
 
@@ -46,7 +50,8 @@
         <property name="generators">
             <list>
                 <ref bean="geneReportGenerator"/>
-                <!-- add qtlReportGenerator, strainReportGenerator, ... here -->
+                <ref bean="qtlReportGenerator"/>
+                <!-- add strainReportGenerator, ... here -->
             </list>
         </property>
 

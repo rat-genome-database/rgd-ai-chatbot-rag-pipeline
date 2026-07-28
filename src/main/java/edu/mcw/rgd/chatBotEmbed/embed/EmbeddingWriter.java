@@ -1,6 +1,7 @@
 package edu.mcw.rgd.chatBotEmbed.embed;
 
 import javax.sql.DataSource;
+import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -46,9 +47,29 @@ public class EmbeddingWriter {
                 ps.setTimestamp(4, now);
                 ps.addBatch();
             }
-            int[] result = ps.executeBatch();
-            return result.length;
+            try {
+                int[] result = ps.executeBatch();
+                return result.length;
+            } catch (SQLException e) {
+                throw new SQLException("batch insert failed for '" + fileName + "': " + fullBatchMessage(e), e);
+            }
         }
+    }
+
+    /**
+     * Batch failures wrap the real cause in a chained "next exception" that a plain
+     * {@code getMessage()} never shows. Walk both the {@link BatchUpdateException} next-chain
+     * and the normal cause chain so the underlying Postgres error (e.g. a failing trigger or a
+     * missing column) is always in the log.
+     */
+    private static String fullBatchMessage(SQLException e) {
+        StringBuilder sb = new StringBuilder(e.getMessage());
+        SQLException next = (e instanceof BatchUpdateException) ? e.getNextException() : null;
+        while (next != null) {
+            sb.append(" | caused by: ").append(next.getMessage());
+            next = next.getNextException();
+        }
+        return sb.toString();
     }
 
     /** Format a float vector as the pgvector text literal {@code [f1,f2,...]}. */
