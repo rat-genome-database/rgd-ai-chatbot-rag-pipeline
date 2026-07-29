@@ -124,6 +124,10 @@ public class Manager {
         List<Map> assemblies = resolveAssemblies(dao, mapKeysArg);
         MarkdownWriter writer = new MarkdownWriter(outputDir);
 
+        // Per-species sub-directory (e.g. "rat"): reports are generated one species per run
+        // (getRgdIds is species-scoped), so every file in this run lands under the same species.
+        String speciesDir = MarkdownWriter.safeSymbol(SpeciesType.getCommonName(speciesTypeKey)).toLowerCase();
+
         List<Integer> rgdIds;
         if (!rgdIdArg.isEmpty()) {
             rgdIds = rgdIdArg;   // explicit gene list — for testing, skips the full assembly scan
@@ -152,7 +156,7 @@ public class Manager {
                         skipped.incrementAndGet();
                         return;
                     }
-                    Path p = writer.write(generator.getReportType(), doc);
+                    Path p = writer.write(generator.getReportType(), speciesDir, doc);
                     int n = written.incrementAndGet();
                     if (n % 500 == 0) {
                         log.info("  ... {} files written (last: {})", n, p.getFileName());

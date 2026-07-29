@@ -15,6 +15,7 @@ import edu.mcw.rgd.dao.impl.QTLDAO;
 import edu.mcw.rgd.dao.impl.RGDManagementDAO;
 import edu.mcw.rgd.dao.impl.ReferenceDAO;
 import edu.mcw.rgd.dao.impl.SSLPDAO;
+import edu.mcw.rgd.dao.impl.SampleDAO;
 import edu.mcw.rgd.dao.impl.StrainDAO;
 import edu.mcw.rgd.dao.impl.VariantDAO;
 import edu.mcw.rgd.dao.impl.XdbIdDAO;
@@ -22,6 +23,7 @@ import edu.mcw.rgd.dao.spring.StringMapQuery;
 import edu.mcw.rgd.datamodel.Alias;
 import edu.mcw.rgd.datamodel.GWASCatalog;
 import edu.mcw.rgd.datamodel.Gene;
+import edu.mcw.rgd.datamodel.GenomicElement;
 import edu.mcw.rgd.datamodel.Map;
 import edu.mcw.rgd.datamodel.MapData;
 import edu.mcw.rgd.datamodel.MappedQTL;
@@ -31,14 +33,17 @@ import edu.mcw.rgd.datamodel.QTL;
 import edu.mcw.rgd.datamodel.Reference;
 import edu.mcw.rgd.datamodel.RgdId;
 import edu.mcw.rgd.datamodel.SSLP;
+import edu.mcw.rgd.datamodel.Sample;
 import edu.mcw.rgd.datamodel.SpeciesType;
 import edu.mcw.rgd.datamodel.Strain;
+import edu.mcw.rgd.datamodel.Strain2MarkerAssociation;
 import edu.mcw.rgd.datamodel.Variant;
 import edu.mcw.rgd.datamodel.Xdb;
 import edu.mcw.rgd.datamodel.XDBIndex;
 import edu.mcw.rgd.datamodel.XdbId;
 import edu.mcw.rgd.datamodel.ontology.Annotation;
 import edu.mcw.rgd.datamodel.ontologyx.Term;
+import edu.mcw.rgd.datamodel.ontologyx.TermWithStats;
 import edu.mcw.rgd.process.mapping.MapManager;
 
 import java.sql.Connection;
@@ -68,6 +73,7 @@ public class DAO {
     private final AssociationDAO associationDAO = new AssociationDAO();
     private final GWASCatalogDAO gwasCatalogDAO = new GWASCatalogDAO();
     private final OntologyXDAO ontologyXDAO = new OntologyXDAO();
+    private final SampleDAO sampleDAO = new SampleDAO();   // CarpeNovo datasource (set per call)
     private final NotesDAO notesDAO = new NotesDAO();
     private final NomenclatureDAO nomenclatureDAO = new NomenclatureDAO();
     private final XdbIdDAO xdbIdDAO = new XdbIdDAO();
@@ -104,6 +110,71 @@ public class DAO {
     /** Active homologs/orthologs of a gene, returned as their own gene objects. */
     public List<Gene> getActiveOrthologs(int rgdId) throws Exception {
         return geneDAO.getActiveOrthologs(rgdId);
+    }
+
+    // ---- Strains --------------------------------------------------------------
+
+    public Strain getStrain(int rgdId) throws Exception {
+        return strainDAO.getStrain(rgdId);
+    }
+
+    /** All active strains (any species); the generator filters by species itself. */
+    public List<Strain> getActiveStrains() throws Exception {
+        return strainDAO.getActiveStrains();
+    }
+
+    /** The strain-ontology (RS) accession for a strain RGD ID, or null when none is assigned. */
+    public String getStrainOntId(int rgdId) throws Exception {
+        return ontologyXDAO.getStrainOntIdForRgdId(rgdId);
+    }
+
+    /** Cross-reference accessions of one xdb type for an object (e.g. RRRC, key 141). */
+    public List<XdbId> getXdbIdsByKey(int xdbKey, int rgdId) throws Exception {
+        return xdbIdDAO.getXdbIdsByRgdId(xdbKey, rgdId);
+    }
+
+    /** Substrains of a strain, matched by the parent strain's symbol. */
+    public List<Strain> getSubStrains(String strainSymbol) throws Exception {
+        return strainDAO.getSubStrains(strainSymbol);
+    }
+
+    /** Active child terms of a strain-ontology term, for the given species. */
+    public List<TermWithStats> getActiveStrainOntChildren(String ontId, int speciesTypeKey) throws Exception {
+        return ontologyXDAO.getActiveChildTerms(ontId, speciesTypeKey);
+    }
+
+    /** Whether {@code accId} is a descendant of {@code ancestorAccId} in its ontology. */
+    public boolean isDescendantOf(String accId, String ancestorAccId) throws Exception {
+        return ontologyXDAO.isDescendantOf(accId, ancestorAccId);
+    }
+
+    /** The strain RGD ID a strain-ontology term maps to, or 0 when it maps to no strain object. */
+    public int getRgdIdForStrainOntId(String accId) throws Exception {
+        return ontologyXDAO.getRgdIdForStrainOntId(accId);
+    }
+
+    /** Cell lines derived from a strain (the strain report's Cell Lines section). */
+    public List<GenomicElement> getStrainCellLines(int strainRgdId) throws Exception {
+        return associationDAO.getAssociatedGenomicElementsForDetailRgdId(strainRgdId, "cellline_to_strain");
+    }
+
+    /**
+     * A strain's position-marker associations — SSLP, gene, strain and variant markers combined,
+     * as the strain report's Position Markers section gathers them. Allele associations are left
+     * in; the caller filters them (many genes are alleles).
+     */
+    public List<Strain2MarkerAssociation> getStrainMarkerAssociations(int strainRgdId) throws Exception {
+        List<Strain2MarkerAssociation> all = new ArrayList<>();
+        all.addAll(associationDAO.getStrain2SslpAssociations(strainRgdId));
+        all.addAll(associationDAO.getStrain2GeneAssociations(strainRgdId));
+        all.addAll(associationDAO.getStrain2StrainAssociations(strainRgdId));
+        all.addAll(associationDAO.getStrain2VariantAssociations(strainRgdId));
+        return all;
+    }
+
+    /** QTLs associated with a strain (the strain report's Strain QTL Data section). */
+    public List<QTL> getQtlAssociationsForStrain(int strainRgdId) throws Exception {
+        return associationDAO.getQTLAssociationsForStrain(strainRgdId);
     }
 
     // ---- RGD ID / status -----------------------------------------------------
@@ -467,5 +538,23 @@ public class DAO {
             return new ArrayList<>();
         }
         return strainDAO.getStrains(strainRgdIds);
+    }
+
+    /** Assemblies (map-key strings) on which a strain has PolyPhen-damaging variants. */
+    public List<String> getStrainDamagingVariantAssemblies(int strainRgdId) throws Exception {
+        variantDAO.setDataSource(DataSourceFactory.getInstance().getCarpeNovoDataSource());
+        return variantDAO.getAssemblyOfDamagingVariants(strainRgdId);
+    }
+
+    /** Variant samples for a strain (CarpeNovo), used to list which have damaging variants. */
+    public List<Sample> getStrainSamples(int strainRgdId) throws Exception {
+        sampleDAO.setDataSource(DataSourceFactory.getInstance().getCarpeNovoDataSource());
+        return sampleDAO.getSamplesByStrainRgdId(strainRgdId);
+    }
+
+    /** Whether a given variant sample has any PolyPhen-damaging variants on its assembly. */
+    public boolean sampleHasDamagingVariants(int sampleId, int mapKey) throws Exception {
+        variantDAO.setDataSource(DataSourceFactory.getInstance().getCarpeNovoDataSource());
+        return variantDAO.hasDamagingVariants(sampleId, String.valueOf(mapKey));
     }
 }

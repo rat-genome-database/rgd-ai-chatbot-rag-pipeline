@@ -2,4 +2,4 @@
 #
 # rgd-ai-chatbot-rag-pipeline
 #
-./run.sh --mode generate --type gene --species 3
+./run.sh --mode generate --type strain --species 3

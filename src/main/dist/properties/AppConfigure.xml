@@ -10,6 +10,10 @@
         <constructor-arg ref="dao"/>
     </bean>
 
+    <bean id="strainReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.StrainReportGenerator">
+        <constructor-arg ref="dao"/>
+    </bean>
+
     <!--
       "-mode embed": chunk the generated markdown and write vectors to the Postgres
       document_embeddings table (rgdcore's "rgdRag" datasource, configured in the same
@@ -51,7 +55,7 @@
             <list>
                 <ref bean="geneReportGenerator"/>
                 <ref bean="qtlReportGenerator"/>
-                <!-- add strainReportGenerator, ... here -->
+                <ref bean="strainReportGenerator"/>
             </list>
         </property>
 
