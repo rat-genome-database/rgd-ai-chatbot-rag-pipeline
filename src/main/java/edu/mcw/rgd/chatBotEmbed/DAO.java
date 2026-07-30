@@ -9,6 +9,7 @@ import edu.mcw.rgd.dao.impl.GWASCatalogDAO;
 import edu.mcw.rgd.dao.impl.GeneDAO;
 import edu.mcw.rgd.dao.impl.MapDAO;
 import edu.mcw.rgd.dao.impl.OntologyXDAO;
+import edu.mcw.rgd.dao.impl.PhenominerDAO;
 import edu.mcw.rgd.dao.impl.NomenclatureDAO;
 import edu.mcw.rgd.dao.impl.NotesDAO;
 import edu.mcw.rgd.dao.impl.QTLDAO;
@@ -44,7 +45,9 @@ import edu.mcw.rgd.datamodel.XdbId;
 import edu.mcw.rgd.datamodel.ontology.Annotation;
 import edu.mcw.rgd.datamodel.ontologyx.Term;
 import edu.mcw.rgd.datamodel.ontologyx.TermWithStats;
+import edu.mcw.rgd.datamodel.pheno.Record;
 import edu.mcw.rgd.process.mapping.MapManager;
+import edu.mcw.rgd.process.pheno.SearchBean;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -74,6 +77,7 @@ public class DAO {
     private final GWASCatalogDAO gwasCatalogDAO = new GWASCatalogDAO();
     private final OntologyXDAO ontologyXDAO = new OntologyXDAO();
     private final SampleDAO sampleDAO = new SampleDAO();   // CarpeNovo datasource (set per call)
+    private final PhenominerDAO phenominerDAO = new PhenominerDAO();
     private final NotesDAO notesDAO = new NotesDAO();
     private final NomenclatureDAO nomenclatureDAO = new NomenclatureDAO();
     private final XdbIdDAO xdbIdDAO = new XdbIdDAO();
@@ -175,6 +179,21 @@ public class DAO {
     /** QTLs associated with a strain (the strain report's Strain QTL Data section). */
     public List<QTL> getQtlAssociationsForStrain(int strainRgdId) throws Exception {
         return associationDAO.getQTLAssociationsForStrain(strainRgdId);
+    }
+
+    /**
+     * PhenoMiner records for a strain, found by the strain's ontology (RS) accession — the data
+     * behind the strain report's "Related Phenotype Data" section. Each {@link Record} carries a
+     * clinical measurement, measurement method, experimental conditions and a sample/strain.
+     */
+    public List<Record> getPhenominerRecordsForStrainOnt(String strainOntId) throws Exception {
+        SearchBean sb = new SearchBean();
+        sb.setSAccId(strainOntId);
+        List<Integer> ids = phenominerDAO.getRecordIdsForReport(sb);
+        if (ids == null || ids.isEmpty()) {
+            return new ArrayList<>();
+        }
+        return phenominerDAO.getRecords(ids);
     }
 
     // ---- RGD ID / status -----------------------------------------------------

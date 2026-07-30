@@ -14,7 +14,10 @@ import edu.mcw.rgd.datamodel.SpeciesType;
 import edu.mcw.rgd.datamodel.Strain;
 import edu.mcw.rgd.datamodel.Strain2MarkerAssociation;
 import edu.mcw.rgd.datamodel.XdbId;
+import edu.mcw.rgd.datamodel.ontologyx.Term;
 import edu.mcw.rgd.datamodel.ontologyx.TermWithStats;
+import edu.mcw.rgd.datamodel.pheno.Condition;
+import edu.mcw.rgd.datamodel.pheno.Record;
 import edu.mcw.rgd.process.Utils;
 
 import java.util.ArrayList;
@@ -108,6 +111,7 @@ public class StrainReportGenerator extends AbstractReportGenerator {
         appendSummary(md, strain, rgdId);
         appendHighlights(md, strain);
         appendAnnotations(md, rgdId, ONTOLOGY_SECTIONS);
+        appendRelatedPhenotypeData(md, strain);
         appendReferences(md, rgdId);
         appendRegion(md, strain);
         appendExternalDbLinks(md, rgdId, strain.getSpeciesTypeKey());
@@ -217,6 +221,87 @@ public class StrainReportGenerator extends AbstractReportGenerator {
             links.add(Md.link(Utils.defaultString(term.getTerm()), url));
         }
         return String.join(", ", links);
+    }
+
+    /**
+     * Related Phenotype Data section: the phenotype measurements recorded for this strain via
+     * PhenoMiner, grouped into the distinct clinical measurements, measurement methods,
+     * experimental conditions and rat strains they involve (matching the old report's sub-sections
+     * under "Related Phenotype Data"). Only the distinct ontology terms are reported — the
+     * thousands of individual measurement values are distilled to the terms they exercise.
+     */
+    private void appendRelatedPhenotypeData(StringBuilder md, Strain strain) throws Exception {
+        String ontId = dao.getStrainOntId(strain.getRgdId());
+        if (Utils.isStringEmpty(ontId)) {
+            return;
+        }
+        List<Record> records = dao.getPhenominerRecordsForStrainOnt(ontId);
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+
+        LinkedHashSet<String> cmo = new LinkedHashSet<>();
+        LinkedHashSet<String> mmo = new LinkedHashSet<>();
+        LinkedHashSet<String> xco = new LinkedHashSet<>();
+        LinkedHashSet<String> strains = new LinkedHashSet<>();
+        for (Record rec : records) {
+            if (rec.getClinicalMeasurement() != null) {
+                addAcc(cmo, rec.getClinicalMeasurement().getAccId());
+            }
+            if (rec.getMeasurementMethod() != null) {
+                addAcc(mmo, rec.getMeasurementMethod().getAccId());
+            }
+            if (rec.getConditions() != null) {
+                for (Condition c : rec.getConditions()) {
+                    addAcc(xco, c.getOntologyId());
+                }
+            }
+            if (rec.getSample() != null) {
+                addAcc(strains, rec.getSample().getStrainAccId());
+            }
+        }
+
+        String cmoList = ontTermList(cmo);
+        String mmoList = ontTermList(mmo);
+        String xcoList = ontTermList(xco);
+        String strainList = ontTermList(strains);
+        if (cmoList.isEmpty() && mmoList.isEmpty() && xcoList.isEmpty() && strainList.isEmpty()) {
+            return;
+        }
+
+        md.append(Md.heading(2, "Related Phenotype Data"));
+        md.append("*Phenotype measurements recorded for this strain via PhenoMiner.*\n\n");
+        if (!cmoList.isEmpty()) {
+            md.append(Md.heading(3, "Clinical Measurements")).append(cmoList).append("\n\n");
+        }
+        if (!mmoList.isEmpty()) {
+            md.append(Md.heading(3, "Measurement Methods")).append(mmoList).append("\n\n");
+        }
+        if (!xcoList.isEmpty()) {
+            md.append(Md.heading(3, "Experimental Conditions")).append(xcoList).append("\n\n");
+        }
+        if (!strainList.isEmpty()) {
+            md.append(Md.heading(3, "Rat Strains")).append(strainList).append("\n\n");
+        }
+    }
+
+    /** Add a non-blank, trimmed accession to the set. */
+    private static void addAcc(LinkedHashSet<String> set, String acc) {
+        if (!Utils.isStringEmpty(acc)) {
+            set.add(acc.trim());
+        }
+    }
+
+    /** Resolve a set of accessions to sorted "term name (ACC)" links, comma-joined. */
+    private String ontTermList(LinkedHashSet<String> accs) throws Exception {
+        List<String> items = new ArrayList<>();
+        for (String acc : accs) {
+            Term term = dao.getOntologyTerm(acc);
+            String name = (term != null && !Utils.isStringEmpty(term.getTerm())) ? term.getTerm() : acc;
+            items.add(Md.link(name + " (" + acc + ")", ONTOLOGY_TERM_URL + acc));
+        }
+        items.sort(String.CASE_INSENSITIVE_ORDER);
+        return String.join(", ", items);
     }
 
     /**
