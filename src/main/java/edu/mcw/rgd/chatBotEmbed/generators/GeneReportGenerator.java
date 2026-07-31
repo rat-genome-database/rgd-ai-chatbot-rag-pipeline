@@ -115,7 +115,7 @@ public class GeneReportGenerator extends AbstractReportGenerator {
           .append(Md.link("Rat Genome Database (RGD)", "https://rgd.mcw.edu"))
           .append(", Medical College of Wisconsin.*\n");
 
-        String displayName = "RGD Gene Report - " + symbol + " (" + rgdId + ")";
+        String displayName = "RGD Gene Report - " + symbol + " (" + species + ") (" + rgdId + ")";
         return new ReportDoc(rgdId, displayName, MarkdownWriter.safeSymbol(symbol), md.toString());
     }
 

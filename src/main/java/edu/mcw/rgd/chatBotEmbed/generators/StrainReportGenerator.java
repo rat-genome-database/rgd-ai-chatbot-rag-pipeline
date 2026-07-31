@@ -36,9 +36,9 @@ import java.util.List;
  * (the ChatGPT explainer link, photo, file-download links, HRDP portal link and the genomic
  * position table) are intentionally omitted — they carry nothing for retrieval.</p>
  *
- * <p>The display name is {@code RGD Strain Report - <symbol> (<rgdId>)}, matching the name the
- * chatbot's earlier ingest used, so re-embedding replaces those rows rather than duplicating
- * them.</p>
+ * <p>The display name is {@code RGD Strain Report - <symbol> (<species>) (<rgdId>)}; the species
+ * common name disambiguates the same symbol across species in the {@code file_name} column and
+ * in citations.</p>
  */
 public class StrainReportGenerator extends AbstractReportGenerator {
 
@@ -121,7 +121,8 @@ public class StrainReportGenerator extends AbstractReportGenerator {
           .append(Md.link("Rat Genome Database (RGD)", "https://rgd.mcw.edu"))
           .append(", Medical College of Wisconsin.*\n");
 
-        String displayName = "RGD Strain Report - " + symbol + " (" + rgdId + ")";
+        String species = SpeciesType.getCommonName(strain.getSpeciesTypeKey());
+        String displayName = "RGD Strain Report - " + symbol + " (" + species + ") (" + rgdId + ")";
         return new ReportDoc(rgdId, displayName, MarkdownWriter.safeSymbol(symbol), md.toString());
     }
 

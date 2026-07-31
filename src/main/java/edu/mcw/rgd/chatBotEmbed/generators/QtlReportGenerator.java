@@ -33,9 +33,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * inheritance type, cross type, and strains crossed (rat) / population stats (human). The
  * page's JBrowse link is intentionally omitted — it carries no information for retrieval.</p>
  *
- * <p>The display name is {@code RGD Qtl Report - <symbol> (<rgdId>)}, matching the name the
- * chatbot's earlier ingest used, so re-embedding replaces those rows rather than duplicating
- * them.</p>
+ * <p>The display name is {@code RGD Qtl Report - <symbol> (<species>) (<rgdId>)}; the species
+ * common name disambiguates the same symbol across species in the {@code file_name} column and
+ * in citations.</p>
  */
 public class QtlReportGenerator extends AbstractReportGenerator {
 
@@ -130,7 +130,8 @@ public class QtlReportGenerator extends AbstractReportGenerator {
           .append(Md.link("Rat Genome Database (RGD)", "https://rgd.mcw.edu"))
           .append(", Medical College of Wisconsin.*\n");
 
-        String displayName = "RGD Qtl Report - " + symbol + " (" + rgdId + ")";
+        String species = SpeciesType.getCommonName(qtl.getSpeciesTypeKey());
+        String displayName = "RGD Qtl Report - " + symbol + " (" + species + ") (" + rgdId + ")";
         return new ReportDoc(rgdId, displayName, MarkdownWriter.safeSymbol(symbol), md.toString());
     }
 
