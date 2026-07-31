@@ -2,6 +2,7 @@ package edu.mcw.rgd.chatBotEmbed.embed;
 
 import edu.mcw.rgd.chatBotEmbed.chunker.ReportMarkdownChunker;
 import edu.mcw.rgd.dao.impl.DocumentEmbeddingDAO;
+import edu.mcw.rgd.process.Utils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -103,6 +104,7 @@ public class EmbedService {
                 } catch (Exception e) {
                     failed.incrementAndGet();
                     LOG.error("Embed failed for {}: {}", file.getFileName(), e.getMessage());
+                    Utils.printStackTrace(e,LOG);
                 }
             }));
         }
