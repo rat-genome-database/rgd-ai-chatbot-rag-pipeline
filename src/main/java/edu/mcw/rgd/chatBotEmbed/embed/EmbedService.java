@@ -72,7 +72,7 @@ public class EmbedService {
         EmbeddingClient client = new EmbeddingClient(provider, baseUrl, model, dimensions, apiKey);
         DocumentEmbeddingDAO embeddingDAO = new DocumentEmbeddingDAO();
         EmbeddingWriter writer = new EmbeddingWriter(embeddingDAO.getDataSource());
-        System.out.println("Total Chuck Count: " +embeddingDAO.getTotalChunkCount());
+//        System.out.println("Total Chuck Count: " +embeddingDAO.getTotalChunkCount());
         List<Path> files = new ArrayList<>();
         try (Stream<Path> s = Files.walk(root)) {
             s.filter(Files::isRegularFile)
