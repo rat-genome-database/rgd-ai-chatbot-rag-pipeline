@@ -17,6 +17,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -29,8 +31,10 @@ import java.util.stream.Stream;
  * re-embed without re-querying Oracle.</p>
  *
  * <p>Idempotent per file: existing chunks for a display name are deleted before its new
- * chunks are written. Without {@code --force}, files already present in the table are
- * skipped.</p>
+ * chunks are written. Without {@code --force}, the file's markdown is chunked and compared
+ * to the chunks already stored for that display name — files whose chunks are unchanged are
+ * skipped, and only new or <em>changed</em> files are re-embedded. {@code --force} re-embeds
+ * every file unconditionally (no comparison).</p>
  */
 public class EmbedService {
 
@@ -53,7 +57,8 @@ public class EmbedService {
      * Embed all {@code .md} files under {@code outputDir[/subPath]}.
      *
      * @param subPath optional report-type subdirectory (e.g. "gene"); null/blank = everything
-     * @param force   re-embed files already present in the table
+     * @param force   re-embed every file unconditionally; when false, only new or changed
+     *                files (chunks differ from what's stored) are embedded
      */
     public void run(String outputDir, String subPath, boolean force) throws Exception {
         Path root = Paths.get(outputDir);
@@ -85,6 +90,7 @@ public class EmbedService {
 
         AtomicInteger embedded = new AtomicInteger();
         AtomicInteger skipped = new AtomicInteger();
+        AtomicInteger changed = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
         AtomicInteger chunksWritten = new AtomicInteger();
 
@@ -93,7 +99,7 @@ public class EmbedService {
         for (Path file : files) {
             futures.add(pool.submit(() -> {
                 try {
-                    int n = processFile(file, client, embeddingDAO, writer, force, skipped);
+                    int n = processFile(file, client, embeddingDAO, writer, force, skipped, changed);
                     if (n >= 0) {
                         int done = embedded.incrementAndGet();
                         chunksWritten.addAndGet(n);
@@ -114,15 +120,16 @@ public class EmbedService {
         pool.shutdown();
         pool.awaitTermination(12, TimeUnit.HOURS);
 
-        String summary = String.format("Embed done. files=%d skipped=%d failed=%d chunks=%d",
-                embedded.get(), skipped.get(), failed.get(), chunksWritten.get());
+        String summary = String.format("Embed done. files=%d (new=%d changed=%d) skipped=%d failed=%d chunks=%d",
+                embedded.get(), embedded.get() - changed.get(), changed.get(), skipped.get(), failed.get(), chunksWritten.get());
         LOG.info(summary);
         System.out.println(summary);
     }
 
     /** @return chunks written for this file, or -1 if the file was skipped */
     private int processFile(Path file, EmbeddingClient client, DocumentEmbeddingDAO dao,
-                            EmbeddingWriter writer, boolean force, AtomicInteger skipped) throws Exception {
+                            EmbeddingWriter writer, boolean force,
+                            AtomicInteger skipped, AtomicInteger changed) throws Exception {
         String content = Files.readString(file, StandardCharsets.UTF_8);
         String rawName = file.getFileName().toString();
         String displayName = resolveDisplayName(content, rawName);
@@ -132,17 +139,20 @@ public class EmbedService {
             skipped.incrementAndGet();
             return -1;
         }
-        if (!force && dao.fileExists(displayName)) {
-            skipped.incrementAndGet();
-            return -1;
+
+        // Fold the RGD ID into the H1 title (e.g. "# Gene: A2m ..." -> "# Gene: RGD:2004 A2m ..."),
+        // so it rides along in the heading breadcrumb the chunker prepends to every chunk — each
+        // chunk then carries the identity of the object it came from. Done on the markdown before
+        // chunking so the breadcrumb is formed with it in place.
+        String rgdId = resolveRgdId(displayName, rawName);
+        if (rgdId != null) {
+            content = injectRgdIdIntoTitle(content, rgdId);
+        } else {
+            LOG.warn("Could not resolve RGD ID for {} — embedding chunks without an RGD id in the title", rawName);
         }
 
-        // Clean slate so a re-embed replaces rather than duplicates.
-        dao.deleteByFileName(displayName);
-        if (!displayName.equals(rawName)) {
-            dao.deleteByFileName(rawName);
-        }
-
+        // Chunk exactly as the chatbot would. Done up front (chunking is local/cheap) so the
+        // result can be compared to what's already stored before spending any embedding calls.
         List<String> chunks = new ArrayList<>();
         for (String c : chunker.chunk(content)) {
             if (c != null && c.trim().length() >= MIN_CHUNK_CHARS) {
@@ -152,6 +162,27 @@ public class EmbedService {
         if (chunks.isEmpty()) {
             LOG.warn("No usable chunks produced: {}", rawName);
             return 0;
+        }
+
+        // Change detection: without --force, re-embed only if this file's chunks differ from the
+        // chunks already stored for it. getChunksByFileName returns them in insert order (ORDER BY
+        // id), which is the order we wrote them, so an order-sensitive list equality is exact.
+        // An empty stored list (never embedded) counts as changed, so new files still embed.
+        if (!force) {
+            List<String> stored = dao.getChunksByFileName(displayName);
+            if (chunks.equals(stored)) {
+                skipped.incrementAndGet();
+                return -1;
+            }
+            if (!stored.isEmpty()) {
+                changed.incrementAndGet();   // present but different -> genuinely changed
+            }
+        }
+
+        // Clean slate so a re-embed replaces rather than duplicates.
+        dao.deleteByFileName(displayName);
+        if (!displayName.equals(rawName)) {
+            dao.deleteByFileName(rawName);
         }
 
         List<float[]> vectors = new ArrayList<>(chunks.size());
@@ -186,6 +217,61 @@ public class EmbedService {
                     "no API key: set apiKeyFile in AppConfigure.xml, or the " + apiKeyEnv + " environment variable");
         }
         return key;
+    }
+
+    /** The RGD ID in a report's file_name comment, e.g. the {@code 2004} in "... A2m (2004)". */
+    private static final Pattern RGD_ID_IN_PARENS = Pattern.compile("\\((\\d+)\\)");
+
+    /**
+     * The H1 report title's leading {@code "# <Type>: "} (e.g. {@code "# Gene: "}, {@code "# QTL: "}).
+     * Multiline so {@code ^} anchors to the title line; a single {@code #} plus whitespace keeps it
+     * to level-1 headings, and {@code [^:\n]+:} stops at the type label's colon. The RGD ID is
+     * inserted right after this prefix.
+     */
+    private static final Pattern REPORT_H1_PREFIX = Pattern.compile("(?m)^(#[ \\t]+[^:\\n]+:[ \\t]+)");
+
+    /**
+     * Insert {@code "RGD:<id> "} into the report's H1 title, just after its {@code "# <Type>: "}
+     * prefix — turning {@code "# Gene: A2m (alpha-2-macroglobulin)"} into
+     * {@code "# Gene: RGD:2004 A2m (alpha-2-macroglobulin)"}. Only the first match (the title) is
+     * touched; if no recognizable title is found the content is returned unchanged.
+     */
+    private static String injectRgdIdIntoTitle(String content, String rgdId) {
+        Matcher m = REPORT_H1_PREFIX.matcher(content);
+        if (m.find()) {
+            return content.substring(0, m.end()) + "RGD:" + rgdId + " " + content.substring(m.end());
+        }
+        return content;
+    }
+
+    /**
+     * Resolve the object's RGD ID for a report. Every RGD report's file_name comment ends with
+     * the id in parentheses ("RGD Gene Report - A2m (2004)"), so that is the primary source; the
+     * trailing number of the file name ("gene_A2m_2004.md") is the fallback. Returns null when
+     * neither yields a number.
+     */
+    private static String resolveRgdId(String displayName, String rawName) {
+        if (displayName != null) {
+            Matcher m = RGD_ID_IN_PARENS.matcher(displayName);
+            String last = null;
+            while (m.find()) {
+                last = m.group(1);   // last parenthesised number wins (the id trails the name)
+            }
+            if (last != null) {
+                return last;
+            }
+        }
+        if (rawName != null) {
+            String base = rawName.endsWith(".md") ? rawName.substring(0, rawName.length() - 3) : rawName;
+            int u = base.lastIndexOf('_');
+            if (u >= 0 && u < base.length() - 1) {
+                String tail = base.substring(u + 1);
+                if (!tail.isEmpty() && tail.chars().allMatch(Character::isDigit)) {
+                    return tail;
+                }
+            }
+        }
+        return null;
     }
 
     /** Pull the display name from the leading {@code <!-- file_name: ... -->} comment. */
