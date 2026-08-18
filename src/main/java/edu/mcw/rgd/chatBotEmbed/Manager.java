@@ -95,8 +95,6 @@ public class Manager {
             throw new IllegalArgumentException("outputDir not set (configure it in AppConfigure.xml or pass --outDir)");
         }
 
-        log.info("{}", getVersion());
-
         if ("embed".equalsIgnoreCase(mode)) {
             if (embedService == null) {
                 throw new IllegalStateException("no embedService configured in AppConfigure.xml");
@@ -108,6 +106,9 @@ public class Manager {
             throw new IllegalArgumentException("unknown --mode '" + mode + "' (expected generate or embed)");
         }
 
+        // Logged here (not before the mode dispatch) so an embed run never writes to the
+        // generate summary logger — that keeps run.log holding the last generation summary.
+        log.info("{}", getVersion());
         runGenerate(type, speciesTypeKey, mapKeysArg, rgdIdArg, limit);
     }
 

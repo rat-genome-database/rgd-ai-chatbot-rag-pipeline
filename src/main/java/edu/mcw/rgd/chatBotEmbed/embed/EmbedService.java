@@ -2,7 +2,6 @@ package edu.mcw.rgd.chatBotEmbed.embed;
 
 import edu.mcw.rgd.chatBotEmbed.chunker.ReportMarkdownChunker;
 import edu.mcw.rgd.dao.impl.DocumentEmbeddingDAO;
-import edu.mcw.rgd.process.Utils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -11,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,7 +38,10 @@ import java.util.stream.Stream;
  */
 public class EmbedService {
 
-    private static final Logger LOG = LogManager.getLogger("status");
+    // Embed run logs to its own file (embedRun.log), separate from the generate run's summary.log.
+    // Per-file diagnostics are logged at DEBUG so they only reach embedDetail.log; embedRun.log
+    // (INFO-only, emailed) stays small.
+    private static final Logger LOG = LogManager.getLogger("embed");
     private static final int MIN_CHUNK_CHARS = 50;
 
     // Spring-injected configuration (see AppConfigure.xml). Model + dimensions MUST match
@@ -93,6 +96,8 @@ public class EmbedService {
         AtomicInteger changed = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
         AtomicInteger chunksWritten = new AtomicInteger();
+        // Names of files that failed to embed, collected so embedRun.log can list them at the end.
+        List<String> failedFiles = Collections.synchronizedList(new ArrayList<>());
 
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
         List<Future<?>> futures = new ArrayList<>(files.size());
@@ -103,14 +108,16 @@ public class EmbedService {
                     if (n >= 0) {
                         int done = embedded.incrementAndGet();
                         chunksWritten.addAndGet(n);
-                        if (done % 200 == 0) {
+                        if (done % 1000 == 0) {
                             LOG.info("  ... {} files embedded ({} chunks so far)", done, chunksWritten.get());
                         }
                     }
                 } catch (Exception e) {
                     failed.incrementAndGet();
+                    failedFiles.add(file.getFileName() + " — " + e.getMessage());
+                    // Concise line in embedRun.log; full stack trace at DEBUG (embedDetail.log only).
                     LOG.error("Embed failed for {}: {}", file.getFileName(), e.getMessage());
-                    Utils.printStackTrace(e,LOG);
+                    LOG.debug("Embed failure detail for {}", file.getFileName(), e);
                 }
             }));
         }
@@ -124,6 +131,14 @@ public class EmbedService {
                 embedded.get(), embedded.get() - changed.get(), changed.get(), skipped.get(), failed.get(), chunksWritten.get());
         LOG.info(summary);
         System.out.println(summary);
+
+        // List the files that failed so the emailed embedRun.log names them, not just a count.
+        if (!failedFiles.isEmpty()) {
+            LOG.error("{} file(s) failed to embed:", failedFiles.size());
+            for (String f : failedFiles) {
+                LOG.error("  FAILED: {}", f);
+            }
+        }
     }
 
     /** @return chunks written for this file, or -1 if the file was skipped */
@@ -135,7 +150,7 @@ public class EmbedService {
         String displayName = resolveDisplayName(content, rawName);
 
         if (!ReportMarkdownChunker.isRgdReport(content)) {
-            LOG.warn("Not an RGD report (missing file_name/Report header), skipping: {}", rawName);
+            LOG.debug("Not an RGD report (missing file_name/Report header), skipping: {}", rawName);
             skipped.incrementAndGet();
             return -1;
         }
@@ -148,7 +163,7 @@ public class EmbedService {
         if (rgdId != null) {
             content = injectRgdIdIntoTitle(content, rgdId);
         } else {
-            LOG.warn("Could not resolve RGD ID for {} — embedding chunks without an RGD id in the title", rawName);
+            LOG.debug("Could not resolve RGD ID for {} — embedding chunks without an RGD id in the title", rawName);
         }
 
         // Chunk exactly as the chatbot would. Done up front (chunking is local/cheap) so the
@@ -160,7 +175,7 @@ public class EmbedService {
             }
         }
         if (chunks.isEmpty()) {
-            LOG.warn("No usable chunks produced: {}", rawName);
+            LOG.debug("No usable chunks produced: {}", rawName);
             return 0;
         }
 
