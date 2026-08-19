@@ -185,7 +185,9 @@ public class ReportMarkdownChunker {
         // Flush final section
         flushSection(chunks, sectionLines, headingStack, tableHeader);
 
-        LOG.info("Report chunked into {} chunks (max {} tokens/chunk)", chunks.size(), MAX_TOKENS);
+        // DEBUG, not INFO: this fires once per file, so at INFO it floods the embed run with
+        // one line per report. Kept at DEBUG for troubleshooting a single report's chunking.
+        LOG.debug("Report chunked into {} chunks (max {} tokens/chunk)", chunks.size(), MAX_TOKENS);
         return chunks;
     }
 
