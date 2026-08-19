@@ -17,8 +17,7 @@
                 <TimeBasedTriggeringPolicy interval="1"/>
             </Policies>
         </RollingFile>
-        <!-- Generate (--mode generate) summary. createOnDemand keeps an embed run from
-             truncating it, so run.log always holds the last generation summary. Emailed. -->
+
         <File name="summary" append="false" createOnDemand="true" fileName="run.log">
             <ThresholdFilter level="INFO" onMatch="ACCEPT" onMismatch="DENY"/>
         </File>
@@ -70,10 +69,7 @@
         <File name="noSampleSummary" append="false" fileName="logs/noSampleSummary.log">
             <ThresholdFilter level="INFO" onMatch="ACCEPT" onMismatch="DENY"/>
         </File>
-
-        <!-- Embed (--mode embed) gets its own logs, separate from the generate run.
-             embedRun.log is rewritten each run (append=false), INFO-only, and kept small
-             so it can be emailed. Verbose per-file diagnostics go to embedDetail.log only. -->
+        
         <File name="embedRun" append="false" createOnDemand="true" fileName="logs/embedRun.log">
             <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss} %p - %m%n"/>
             <ThresholdFilter level="INFO" onMatch="ACCEPT" onMismatch="DENY"/>
