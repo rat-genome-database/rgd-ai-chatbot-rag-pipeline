@@ -69,7 +69,7 @@
         <File name="noSampleSummary" append="false" fileName="logs/noSampleSummary.log">
             <ThresholdFilter level="INFO" onMatch="ACCEPT" onMismatch="DENY"/>
         </File>
-        
+
         <File name="embedRun" append="false" createOnDemand="true" fileName="logs/embedRun.log">
             <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss} %p - %m%n"/>
             <ThresholdFilter level="INFO" onMatch="ACCEPT" onMismatch="DENY"/>

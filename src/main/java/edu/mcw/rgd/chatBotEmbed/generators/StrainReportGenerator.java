@@ -98,7 +98,10 @@ public class StrainReportGenerator extends AbstractReportGenerator {
             return null;   // withdrawn / retired — don't embed it
         }
 
-        String symbol = Utils.defaultString(strain.getSymbol());
+        // STRAIN_SYMBOL can carry HTML tags (e.g. <sup>, <i>); use the tagless symbol for the
+        // markdown title, file name and embedding display name, falling back to the tagged symbol
+        // only when no tagless form is available.
+        String symbol = taglessSymbol(strain);
 
         StringBuilder md = new StringBuilder(2048);
 
@@ -134,7 +137,7 @@ public class StrainReportGenerator extends AbstractReportGenerator {
      */
     private void appendSummary(StringBuilder md, Strain strain, int rgdId) throws Exception {
         md.append(Md.heading(2, "Summary"));
-        md.append("- **Symbol:** ").append(Utils.defaultString(strain.getSymbol())).append("\n");
+        md.append("- **Symbol:** ").append(taglessSymbol(strain)).append("\n");
         appendLine(md, "Strain", strain.getStrain());
         appendLine(md, "Substrain", strain.getSubstrain());
         appendLine(md, "Full Name", strain.getName());
@@ -456,6 +459,25 @@ public class StrainReportGenerator extends AbstractReportGenerator {
             return acc.length() == 4 ? "RRID:RRRC_0" + acc : "RRID:RRRC_" + acc;
         }
         return "RRID:RGD_" + rgdId;
+    }
+
+    /**
+     * The strain's symbol with any HTML tags stripped ({@code TAGLESS_STRAIN_SYMBOL}), used for the
+     * markdown title, file name and embedding display name so no markup leaks into the embedded
+     * text or citation. When no tagless form exists, falls back to the raw {@code STRAIN_SYMBOL}
+     * with its HTML tags stripped so a tagged symbol never reaches the output either way.
+     */
+    private static String taglessSymbol(Strain strain) {
+        String tagless = strain.getTaglessStrainSymbol();
+        if (!Utils.isStringEmpty(tagless)) {
+            return tagless.trim();
+        }
+        return stripHtml(Utils.defaultString(strain.getSymbol()));
+    }
+
+    /** Remove HTML tags (e.g. {@code <sup>}, {@code <i>}) from a string, collapsing to plain text. */
+    private static String stripHtml(String s) {
+        return s.replaceAll("<[^>]*>", "").trim();
     }
 
     /**
