@@ -98,9 +98,10 @@ public class QtlReportGenerator extends AbstractReportGenerator {
 
         StringBuilder md = new StringBuilder(2048);
 
-        // Title — becomes the root of every chunk's heading breadcrumb. Matches the report
-        // page heading: "QTL: <symbol> (<name>) <taxonomic name>".
-        md.append("# QTL: ").append(symbol);
+        // Title — becomes the root of every chunk's heading breadcrumb. The RGD ID precedes the
+        // symbol so every chunk carries it. Otherwise matches the report page heading:
+        // "QTL: <symbol> (<name>) <taxonomic name>".
+        md.append("# QTL: RGD:").append(rgdId).append(" ").append(symbol);
         if (!name.isEmpty()) {
             md.append(" (").append(name).append(")");
         }

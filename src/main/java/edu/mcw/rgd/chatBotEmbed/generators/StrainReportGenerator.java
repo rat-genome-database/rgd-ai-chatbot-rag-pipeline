@@ -102,11 +102,15 @@ public class StrainReportGenerator extends AbstractReportGenerator {
         // markdown title, file name and embedding display name, falling back to the tagged symbol
         // only when no tagless form is available.
         String symbol = taglessSymbol(strain);
+        String species = SpeciesType.getCommonName(strain.getSpeciesTypeKey());
 
         StringBuilder md = new StringBuilder(2048);
 
-        // Title — becomes the root of every chunk's heading breadcrumb.
-        md.append("# Strain: ").append(symbol).append("\n\n");
+        // Title — becomes the root of every chunk's heading breadcrumb. The RGD ID precedes the
+        // symbol and the species follows it, so every chunk carries both (the same symbol recurs
+        // across species).
+        md.append("# Strain: RGD:").append(rgdId).append(" ").append(symbol)
+          .append(" (").append(species).append(")\n\n");
         md.append("> **Source:** ")
           .append(Md.link("Rat Genome Database (RGD)", STRAIN_REPORT_URL + rgdId))
           .append("\n\n---\n\n");
@@ -124,7 +128,6 @@ public class StrainReportGenerator extends AbstractReportGenerator {
           .append(Md.link("Rat Genome Database (RGD)", "https://rgd.mcw.edu"))
           .append(", Medical College of Wisconsin.*\n");
 
-        String species = SpeciesType.getCommonName(strain.getSpeciesTypeKey());
         String displayName = "RGD Strain Report - " + symbol + " (" + species + ") (" + rgdId + ")";
         return new ReportDoc(rgdId, displayName, MarkdownWriter.safeSymbol(symbol), md.toString());
     }

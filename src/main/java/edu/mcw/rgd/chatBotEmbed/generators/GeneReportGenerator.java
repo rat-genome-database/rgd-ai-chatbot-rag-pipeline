@@ -87,8 +87,9 @@ public class GeneReportGenerator extends AbstractReportGenerator {
 
         StringBuilder md = new StringBuilder(4096);
 
-        // Title — becomes the root of every chunk's heading breadcrumb.
-        md.append("# Gene: ").append(symbol);
+        // Title — becomes the root of every chunk's heading breadcrumb. The RGD ID precedes the
+        // symbol so every chunk carries it.
+        md.append("# Gene: RGD:").append(rgdId).append(" ").append(symbol);
         if (!name.isEmpty()) {
             md.append(" (").append(name).append(")");
         }
