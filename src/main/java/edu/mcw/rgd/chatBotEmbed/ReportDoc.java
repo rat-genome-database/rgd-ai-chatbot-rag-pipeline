@@ -10,8 +10,12 @@ package edu.mcw.rgd.chatBotEmbed;
  */
 public class ReportDoc {
 
-    /** RGD ID this report is for; used in the on-disk file name. */
-    public final int rgdId;
+    /**
+     * Stable identifier this report is for, used as the trailing token of the on-disk file name.
+     * For gene/QTL/strain reports this is the RGD ID (as a string); for ontology-term reports it is
+     * the term accession with its colon made filename-safe (e.g. {@code MP_0001900}).
+     */
+    public final String id;
 
     /** Human-readable name stored in {@code document_embeddings.file_name} and shown as the citation. */
     public final String displayName;
@@ -22,10 +26,15 @@ public class ReportDoc {
     /** Full markdown body, starting at the {@code # Title} heading (no file_name comment). */
     public final String markdown;
 
-    public ReportDoc(int rgdId, String displayName, String safeSymbol, String markdown) {
-        this.rgdId = rgdId;
+    public ReportDoc(String id, String displayName, String safeSymbol, String markdown) {
+        this.id = id;
         this.displayName = displayName;
         this.safeSymbol = safeSymbol;
         this.markdown = markdown;
+    }
+
+    /** Convenience for the RGD-ID-keyed report types (gene, QTL, strain). */
+    public ReportDoc(int rgdId, String displayName, String safeSymbol, String markdown) {
+        this(String.valueOf(rgdId), displayName, safeSymbol, markdown);
     }
 }

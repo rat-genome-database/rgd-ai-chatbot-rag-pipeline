@@ -59,11 +59,14 @@ public class EmbedService {
     /**
      * Embed all {@code .md} files under {@code outputDir[/subPath]}.
      *
-     * @param subPath optional report-type subdirectory (e.g. "gene"); null/blank = everything
-     * @param force   re-embed every file unconditionally; when false, only new or changed
-     *                files (chunks differ from what's stored) are embedded
+     * @param subPath    optional report-type subdirectory (e.g. "gene"); null/blank = everything
+     * @param speciesDir optional species sub-directory name (e.g. "human"); null/blank = every
+     *                   species. Reports live under {@code <type>/<species>/}, so this keeps only
+     *                   files with a matching species path segment.
+     * @param force      re-embed every file unconditionally; when false, only new or changed
+     *                   files (chunks differ from what's stored) are embedded
      */
-    public void run(String outputDir, String subPath, boolean force) throws Exception {
+    public void run(String outputDir, String subPath, String speciesDir, boolean force) throws Exception {
         Path root = Paths.get(outputDir);
         if (subPath != null && !subPath.isBlank()) {
             root = root.resolve(subPath);
@@ -71,6 +74,7 @@ public class EmbedService {
         if (!Files.isDirectory(root)) {
             throw new IllegalArgumentException("not a directory: " + root);
         }
+        String species = (speciesDir != null && !speciesDir.isBlank()) ? speciesDir.trim() : null;
 
         String apiKey = null;
         if ("openai".equalsIgnoreCase(provider)) {
@@ -85,11 +89,12 @@ public class EmbedService {
         try (Stream<Path> s = Files.walk(root)) {
             s.filter(Files::isRegularFile)
              .filter(p -> p.toString().endsWith(".md"))
+             .filter(p -> species == null || hasPathSegment(p, species))
              .forEach(files::add);
         }
 
-        LOG.info("Embedding {} markdown files under {} (provider={}, model={}, dims={}, threads={})",
-                files.size(), root, provider, model, dimensions, threadCount);
+        LOG.info("Embedding {} markdown files under {} (species={}, provider={}, model={}, dims={}, threads={})",
+                files.size(), root, species == null ? "all" : species, provider, model, dimensions, threadCount);
 
         AtomicInteger embedded = new AtomicInteger();
         AtomicInteger skipped = new AtomicInteger();
@@ -139,6 +144,16 @@ public class EmbedService {
                 LOG.error("  FAILED: {}", f);
             }
         }
+    }
+
+    /** True when {@code path} has a directory/file segment equal (case-insensitively) to {@code segment}. */
+    private static boolean hasPathSegment(Path path, String segment) {
+        for (Path part : path) {
+            if (part.toString().equalsIgnoreCase(segment)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** @return chunks written for this file, or -1 if the file was skipped */
@@ -246,15 +261,31 @@ public class EmbedService {
     private static final Pattern REPORT_H1_PREFIX = Pattern.compile("(?m)^(#[ \\t]+[^:\\n]+:[ \\t]+)");
 
     /**
+     * An identity token already sitting right after the {@code "# <Type>: "} prefix — an
+     * accession-style {@code PREFIX:digits} (e.g. {@code RGD:2004}, {@code MP:0001900},
+     * {@code DOID:14330}). When the generator has already written one into the title, we must not
+     * inject a second, so this guards {@link #injectRgdIdIntoTitle} against double-injection.
+     */
+    private static final Pattern TITLE_HAS_IDENTITY = Pattern.compile("^[A-Za-z][A-Za-z0-9]*:\\d");
+
+    /**
      * Insert {@code "RGD:<id> "} into the report's H1 title, just after its {@code "# <Type>: "}
      * prefix — turning {@code "# Gene: A2m (alpha-2-macroglobulin)"} into
      * {@code "# Gene: RGD:2004 A2m (alpha-2-macroglobulin)"}. Only the first match (the title) is
      * touched; if no recognizable title is found the content is returned unchanged.
+     *
+     * <p>Idempotent: when an identity token already follows the prefix (the generator emits
+     * {@code RGD:<id>} for gene/QTL/strain, and an ontology accession like {@code MP:0001900} for
+     * ontology terms), the title is left as-is — otherwise it would gain a duplicate {@code RGD:}.</p>
      */
     private static String injectRgdIdIntoTitle(String content, String rgdId) {
         Matcher m = REPORT_H1_PREFIX.matcher(content);
         if (m.find()) {
-            return content.substring(0, m.end()) + "RGD:" + rgdId + " " + content.substring(m.end());
+            String rest = content.substring(m.end());
+            if (TITLE_HAS_IDENTITY.matcher(rest).find()) {
+                return content;   // identity already present — don't double-inject
+            }
+            return content.substring(0, m.end()) + "RGD:" + rgdId + " " + rest;
         }
         return content;
     }

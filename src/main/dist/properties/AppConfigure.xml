@@ -14,6 +14,11 @@
         <constructor-arg ref="dao"/>
     </bean>
 
+    <!-- Accession-keyed (ontology-term) generator; run with type "ontology" (see Manager usage). -->
+    <bean id="ontologyReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.OntologyReportGenerator">
+        <constructor-arg ref="dao"/>
+    </bean>
+
     <!--
       "-mode embed": chunk the generated markdown and write vectors to the Postgres
       document_embeddings table (rgdcore's "rgdRag" datasource, configured in the same
@@ -27,8 +32,8 @@
     <bean id="embedService" class="edu.mcw.rgd.chatBotEmbed.embed.EmbedService">
         <property name="provider" value="openai"/>                       <!-- openai | ollama -->
         <property name="baseUrl" value="https://api.openai.com/v1"/>
-        <property name="model" value="text-embedding-3-small"/>          <!-- MUST match the chatbot -->
-        <property name="dimensions" value="1536"/>                       <!-- MUST match the chatbot -->
+        <property name="model" value="text-embedding-3-large"/>          <!-- MUST match the chatbot (spring.ai.openai.embedding.options.model) -->
+        <property name="dimensions" value="1536"/>                       <!-- MUST match the chatbot (spring.ai.openai.embedding.options.dimensions) -->
 
         <!-- API key: read from a file containing ONLY the key (kept out of git, like the
              connections file). If apiKeyFile is blank, falls back to the apiKeyEnv env var. -->
@@ -56,6 +61,13 @@
                 <ref bean="geneReportGenerator"/>
                 <ref bean="qtlReportGenerator"/>
                 <ref bean="strainReportGenerator"/>
+            </list>
+        </property>
+
+        <!-- Accession-keyed generators (ontology terms), run on Manager's term path. -->
+        <property name="termGenerators">
+            <list>
+                <ref bean="ontologyReportGenerator"/>
             </list>
         </property>
 

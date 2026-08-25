@@ -13,6 +13,11 @@ java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
 }
+
+// Read source files as UTF-8 regardless of the build machine's default charset, so any non-ASCII
+// in string literals is compiled correctly (avoids mojibake in generated output, e.g. em dashes).
+compileJava.options.encoding = 'UTF-8'
+compileTestJava.options.encoding = 'UTF-8'
 mainClassName = 'edu.mcw.rgd.chatBotEmbed.Manager'
 String myAppName = 'rgd-ai-chatbot-rag-pipeline'
 

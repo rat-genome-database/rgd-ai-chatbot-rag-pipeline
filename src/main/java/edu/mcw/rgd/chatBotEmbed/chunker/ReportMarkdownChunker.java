@@ -26,12 +26,12 @@ import java.util.regex.Pattern;
  * 3. Detects table headers (rows above |---|) and prepends them to split table chunks
  * 4. Splits at line boundaries — never mid-line
  * 5. Prepends the heading breadcrumb to every chunk for retrieval context
- * 6. Handles oversized lines (>1000 tokens) by splitting at link boundaries
+ * 6. Handles oversized lines (>MAX_TOKENS) by splitting at link boundaries
  */
 public class ReportMarkdownChunker {
 
     private static final Logger LOG = LogManager.getLogger(ReportMarkdownChunker.class);
-    private static final int MAX_TOKENS = 1000;
+    private static final int MAX_TOKENS = 800;
     private static final Pattern HEADING = Pattern.compile("^(#{1,6})\\s+(.+)$");
 
     private final Encoding encoding;

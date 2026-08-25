@@ -343,6 +343,64 @@ public class DAO {
         return ontologyXDAO.getTermByAccId(accId);
     }
 
+    // ---- Ontology term reports -----------------------------------------------
+
+    /** Public ontologies (the {@code ontologies} table rows flagged public), for enumeration. */
+    public List<edu.mcw.rgd.datamodel.ontologyx.Ontology> getPublicOntologies() throws Exception {
+        return ontologyXDAO.getPublicOntologies();
+    }
+
+    /** One ontology by its id/prefix (e.g. "MP"), or null. */
+    public edu.mcw.rgd.datamodel.ontologyx.Ontology getOntology(String ontId) throws Exception {
+        return ontologyXDAO.getOntology(ontId);
+    }
+
+    /** All active (non-obsolete) terms of an ontology, for enumeration. */
+    public List<Term> getActiveTerms(String ontologyId) throws Exception {
+        return ontologyXDAO.getActiveTerms(ontologyId);
+    }
+
+    /** A term with its precomputed annotation/child/parent stats, or null when unknown. */
+    public TermWithStats getTermWithStats(String accId) throws Exception {
+        return ontologyXDAO.getTermWithStatsCached(accId);
+    }
+
+    /** Synonyms of a term (each carrying a name and a type such as {@code exact_synonym}, {@code alt_id}). */
+    public List<edu.mcw.rgd.datamodel.ontologyx.TermSynonym> getTermSynonyms(String accId) throws Exception {
+        return ontologyXDAO.getTermSynonyms(accId);
+    }
+
+    /** Definition cross-references (db-xrefs) recorded for a term. */
+    public List<edu.mcw.rgd.datamodel.ontologyx.TermXRef> getTermXRefs(String accId) throws Exception {
+        return ontologyXDAO.getTermXRefs(accId);
+    }
+
+    /** Direct parent terms of a term. */
+    public List<Term> getParentTerms(String accId) throws Exception {
+        return ontologyXDAO.getParentTerm(accId);
+    }
+
+    /** Direct, active child terms of a term (species 0 = all species), each carrying stats. */
+    public List<TermWithStats> getChildTerms(String accId) throws Exception {
+        return ontologyXDAO.getActiveChildTerms(accId, 0);
+    }
+
+    /**
+     * Annotations to a term, optionally including its descendant terms, for one species and one
+     * object type. {@code speciesTypeKey==0} = all species, {@code objectKey==-1} = all object
+     * types.
+     *
+     * <p>Uses {@code getAnnotationsGroupedByGene}, which — unlike the sibling
+     * {@code getAnnotations(...)} overload, whose {@code withChildren} path is hardwired to direct
+     * annotations — passes {@code withChildren} through faithfully (via the {@code full_annot_index}
+     * descendant rollup) and returns the raw per-annotation rows the ontology report page groups.
+     * The caller must gate on the term's stat count before calling: this method does not cap rows.</p>
+     */
+    public List<Annotation> getTermAnnotations(String accId, boolean withChildren,
+                                               int speciesTypeKey, int maxRows, int objectKey) throws Exception {
+        return annotationDAO.getAnnotationsGroupedByGene(accId, withChildren, speciesTypeKey, maxRows, objectKey);
+    }
+
     /**
      * Distinct, alphabetically-sorted annotation terms for an object within an ontology aspect,
      * each formatted as {@code term name (ACC)}.

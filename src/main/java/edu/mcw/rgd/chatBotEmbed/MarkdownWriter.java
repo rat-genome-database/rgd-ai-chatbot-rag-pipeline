@@ -15,7 +15,7 @@ import java.nio.file.Paths;
  *       this as the {@code document_embeddings.file_name} value, and
  *       {@code ReportMarkdownChunker.isRgdReport()} only selects the section-aware
  *       chunker when line 1 starts with {@code <!-- file_name:} and contains "Report".</li>
- *   <li>Files are named {@code <reportType>_<safeSymbol>_<rgdId>.md} and written under
+ *   <li>Files are named {@code <reportType>_<safeSymbol>_<id>.md} and written under
  *       {@code <outputDir>/<reportType>/<species>/}. The chatbot's ingest walks the report-type
  *       directory recursively, so the per-species sub-directory is transparent to embedding.</li>
  *   <li>UTF-8, {@code \n} line endings, trailing newline.</li>
@@ -30,7 +30,7 @@ public class MarkdownWriter {
     }
 
     /**
-     * Write {@code <outputDir>/<reportType>/<species>/<reportType>_<safeSymbol>_<rgdId>.md}.
+     * Write {@code <outputDir>/<reportType>/<species>/<reportType>_<safeSymbol>_<id>.md}.
      *
      * @param species filename-safe species directory segment (e.g. {@code "rat"})
      * @return the path written
@@ -39,7 +39,7 @@ public class MarkdownWriter {
         Path dir = outputDir.resolve(reportType).resolve(species);
         Files.createDirectories(dir);
 
-        String fileName = reportType + "_" + doc.safeSymbol + "_" + doc.rgdId + ".md";
+        String fileName = reportType + "_" + doc.safeSymbol + "_" + doc.id + ".md";
         Path file = dir.resolve(fileName);
 
         StringBuilder sb = new StringBuilder(doc.markdown.length() + 64);
