@@ -2,6 +2,9 @@ package edu.mcw.rgd.chatBotEmbed.embed;
 
 import edu.mcw.rgd.chatBotEmbed.chunker.ReportMarkdownChunker;
 import edu.mcw.rgd.dao.impl.DocumentEmbeddingDAO;
+import edu.mcw.rgd.process.ReportMetadata;
+import edu.mcw.rgd.datamodel.ReportObjectDE;
+import edu.mcw.rgd.datamodel.ReportPositionDE;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -11,7 +14,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -63,10 +68,14 @@ public class EmbedService {
      * @param speciesDir optional species sub-directory name (e.g. "human"); null/blank = every
      *                   species. Reports live under {@code <type>/<species>/}, so this keeps only
      *                   files with a matching species path segment.
+     * @param rgdIds     optional explicit RGD IDs; null/empty = every file. Files are named
+     *                   {@code <type>_<symbol>_<id>.md}, so this matches on the trailing id.
+     *                   Intended for testing a handful of objects without a full run.
      * @param force      re-embed every file unconditionally; when false, only new or changed
      *                   files (chunks differ from what's stored) are embedded
      */
-    public void run(String outputDir, String subPath, String speciesDir, boolean force) throws Exception {
+    public void run(String outputDir, String subPath, String speciesDir,
+                    List<Integer> rgdIds, boolean force) throws Exception {
         Path root = Paths.get(outputDir);
         if (subPath != null && !subPath.isBlank()) {
             root = root.resolve(subPath);
@@ -85,16 +94,36 @@ public class EmbedService {
         DocumentEmbeddingDAO embeddingDAO = new DocumentEmbeddingDAO();
         EmbeddingWriter writer = new EmbeddingWriter(embeddingDAO.getDataSource());
 //        System.out.println("Total Chuck Count: " +embeddingDAO.getTotalChunkCount());
+        // Generated files are named <type>_<symbol>_<id>.md, so an explicit id list becomes a
+        // set of filename suffixes. Matching the trailing "_<id>.md" keeps symbols that
+        // themselves contain digits or underscores from producing false hits.
+        Set<String> idSuffixes = new HashSet<>();
+        if (rgdIds != null) {
+            for (Integer id : rgdIds) {
+                if (id != null) {
+                    idSuffixes.add("_" + id + ".md");
+                }
+            }
+        }
+
         List<Path> files = new ArrayList<>();
         try (Stream<Path> s = Files.walk(root)) {
             s.filter(Files::isRegularFile)
              .filter(p -> p.toString().endsWith(".md"))
              .filter(p -> species == null || hasPathSegment(p, species))
+             .filter(p -> idSuffixes.isEmpty() || endsWithAny(p.getFileName().toString(), idSuffixes))
              .forEach(files::add);
         }
 
-        LOG.info("Embedding {} markdown files under {} (species={}, provider={}, model={}, dims={}, threads={})",
-                files.size(), root, species == null ? "all" : species, provider, model, dimensions, threadCount);
+        if (!idSuffixes.isEmpty() && files.size() < idSuffixes.size()) {
+            LOG.warn("Only {} of {} requested RGD ID(s) matched a markdown file under {} — " +
+                    "generate them first, or check --path/--species", files.size(), idSuffixes.size(), root);
+        }
+
+        LOG.info("Embedding {} markdown files under {} (species={}, rgdIds={}, provider={}, model={}, dims={}, threads={})",
+                files.size(), root, species == null ? "all" : species,
+                idSuffixes.isEmpty() ? "all" : String.valueOf(idSuffixes.size()),
+                provider, model, dimensions, threadCount);
 
         AtomicInteger embedded = new AtomicInteger();
         AtomicInteger skipped = new AtomicInteger();
@@ -146,6 +175,16 @@ public class EmbedService {
         }
     }
 
+    /** True when {@code fileName} ends with any of {@code suffixes}. */
+    private static boolean endsWithAny(String fileName, Set<String> suffixes) {
+        for (String suffix : suffixes) {
+            if (fileName.endsWith(suffix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** True when {@code path} has a directory/file segment equal (case-insensitively) to {@code segment}. */
     private static boolean hasPathSegment(Path path, String segment) {
         for (Path part : path) {
@@ -194,6 +233,17 @@ public class EmbedService {
             return 0;
         }
 
+        // Structured facts for the metadata columns and the object tables. All of it comes
+        // from text already in hand — the display name, the breadcrumb on each chunk, and
+        // the Genomic Position table — so none of this costs an Oracle query or an API call.
+        ReportMetadata.Identity identity = ReportMetadata.parseDisplayName(displayName);
+        Long objectRgdId = (identity == null) ? null : identity.rgdId;
+
+        List<String> sections = new ArrayList<>(chunks.size());
+        for (String c : chunks) {
+            sections.add(ReportMetadata.sectionOf(c));
+        }
+
         // Change detection: without --force, re-embed only if this file's chunks differ from the
         // chunks already stored for it. getChunksByFileName returns them in insert order (ORDER BY
         // id), which is the order we wrote them, so an order-sensitive list equality is exact.
@@ -201,6 +251,20 @@ public class EmbedService {
         if (!force) {
             List<String> stored = dao.getChunksByFileName(displayName);
             if (chunks.equals(stored)) {
+                // Unchanged text still needs its metadata if this file predates those columns.
+                // Filling it here costs a handful of statements; re-embedding to achieve the
+                // same thing would cost one API call per chunk across the whole corpus. The
+                // guard keeps steady-state runs to a single indexed lookup per skipped file.
+                if (writer.needsMetadata(displayName, objectRgdId)) {
+                    writeObjectTables(dao, identity, displayName, chunks);
+                    int updated = writer.backfillMetadata(displayName, objectRgdId, sections);
+                    if (updated < 0) {
+                        LOG.warn("Stored row count differs from chunk count for '{}' — " +
+                                "metadata not backfilled; re-embed this file with --force", displayName);
+                    } else {
+                        LOG.debug("Backfilled metadata for {} row(s) of '{}'", updated, displayName);
+                    }
+                }
                 skipped.incrementAndGet();
                 return -1;
             }
@@ -220,8 +284,45 @@ public class EmbedService {
             vectors.add(client.embed(c));
         }
 
-        writer.insert(displayName, chunks, vectors);
+        writer.insert(displayName, objectRgdId, chunks, sections, vectors);
+        writeObjectTables(dao, identity, displayName, chunks);
         return chunks.size();
+    }
+
+    /**
+     * Upsert the object row and its per-assembly positions.
+     *
+     * <p>One row in {@code report_object} per object per species; one row in
+     * {@code report_position} for each assembly that object appears on. Positions are cleared
+     * first so an assembly dropped from a regenerated report does not linger.</p>
+     *
+     * <p>Skipped when the display name carries no numeric RGD ID — ontology reports are keyed
+     * by accession (e.g. {@code DOID:2841}), which cannot go in a bigint column. Their chunks
+     * are still embedded and searchable.</p>
+     */
+    private void writeObjectTables(DocumentEmbeddingDAO dao, ReportMetadata.Identity identity,
+                                   String displayName, List<String> chunks) throws Exception {
+        if (identity == null) {
+            return;
+        }
+
+        ReportObjectDE object = new ReportObjectDE();
+        object.setRgdId(identity.rgdId);
+        object.setObjectType(identity.objectType);
+        object.setSymbol(identity.symbol);
+        object.setSpecies(identity.species);
+        object.setFileName(displayName);
+        object.setName(chunks.isEmpty() ? null
+                : ReportMetadata.nameFromTitle(chunks.get(0), identity.species));
+        dao.insertOrUpdateReportObject(object);
+
+        List<ReportPositionDE> positions = ReportMetadata.parsePositions(identity.rgdId, chunks);
+        dao.deletePositionsByRgdId(identity.rgdId);
+        for (ReportPositionDE p : positions) {
+            dao.insertOrUpdateReportPosition(p);
+        }
+        LOG.debug("Object tables: {} ({}) -> {} position(s)",
+                identity.symbol, identity.rgdId, positions.size());
     }
 
     /**

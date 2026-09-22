@@ -34,8 +34,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <pre>
  *   run.sh --mode generate --type gene [--species 3] [--mapKeys 380,372] [--limit N] [--rgdId N] [--outDir path]
  *   run.sh --mode generate --type ontology [--ontology MP | --ontAcc DOID:10763,DOID:2841] [--species 3] [--object gene] [--limit N] [--outDir path]
- *   run.sh --mode embed [--path gene] [--species 3] [--force] [--outDir path]
+ *   run.sh --mode embed [--path gene] [--species 3] [--rgdId N,N] [--force] [--outDir path]
  * </pre>
+ *
+ * <p>{@code --rgdId} works in both modes: in generate it limits which objects are built,
+ * in embed it limits which of the already-generated files are read. Embedding matches on
+ * the trailing id of the {@code <type>_<symbol>_<id>.md} file name.</p>
  */
 public class Manager {
 
@@ -116,7 +120,7 @@ public class Manager {
             String speciesDir = speciesProvided
                     ? MarkdownWriter.safeSymbol(SpeciesType.getCommonName(speciesTypeKey)).toLowerCase()
                     : null;
-            embedService.run(outputDir, path, speciesDir, force);
+            embedService.run(outputDir, path, speciesDir, rgdIdArg, force);
             return;
         }
         if (!"generate".equalsIgnoreCase(mode)) {
