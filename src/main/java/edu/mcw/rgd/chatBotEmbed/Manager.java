@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   run.sh --mode generate --type gene [--species 3] [--mapKeys 380,372] [--limit N] [--rgdId N] [--outDir path]
  *   run.sh --mode generate --type ontology [--ontology MP | --ontAcc DOID:10763,DOID:2841] [--species 3] [--object gene] [--limit N] [--outDir path]
  *   run.sh --mode embed [--path gene] [--species 3] [--rgdId N,N] [--force] [--outDir path]
+ *   run.sh --mode refresh-objects [--path strain] [--species 3] [--rgdId N,N] [--outDir path]
  * </pre>
  *
  * <p>{@code --rgdId} works in both modes: in generate it limits which objects are built,
@@ -123,8 +124,20 @@ public class Manager {
             embedService.run(outputDir, path, speciesDir, rgdIdArg, force);
             return;
         }
+        if ("refresh-objects".equalsIgnoreCase(mode)) {
+            if (embedService == null) {
+                throw new IllegalStateException("no embedService configured in AppConfigure.xml");
+            }
+            // Rebuilds report_object/report_position from the markdown already on disk.
+            // No embedding, so a change to how metadata is parsed costs nothing to apply.
+            String speciesDir = speciesProvided
+                    ? MarkdownWriter.safeSymbol(SpeciesType.getCommonName(speciesTypeKey)).toLowerCase()
+                    : null;
+            embedService.refreshObjects(outputDir, path, speciesDir, rgdIdArg);
+            return;
+        }
         if (!"generate".equalsIgnoreCase(mode)) {
-            throw new IllegalArgumentException("unknown --mode '" + mode + "' (expected generate or embed)");
+            throw new IllegalArgumentException("unknown --mode '" + mode + "' (expected generate, embed or refresh-objects)");
         }
 
         // Logged here (not before the mode dispatch) so an embed run never writes to the

@@ -95,34 +95,12 @@ public class EmbedService {
         EmbeddingWriter writer = new EmbeddingWriter(embeddingDAO.getDataSource());
 //        System.out.println("Total Chuck Count: " +embeddingDAO.getTotalChunkCount());
         // Generated files are named <type>_<symbol>_<id>.md, so an explicit id list becomes a
-        // set of filename suffixes. Matching the trailing "_<id>.md" keeps symbols that
-        // themselves contain digits or underscores from producing false hits.
-        Set<String> idSuffixes = new HashSet<>();
-        if (rgdIds != null) {
-            for (Integer id : rgdIds) {
-                if (id != null) {
-                    idSuffixes.add("_" + id + ".md");
-                }
-            }
-        }
-
-        List<Path> files = new ArrayList<>();
-        try (Stream<Path> s = Files.walk(root)) {
-            s.filter(Files::isRegularFile)
-             .filter(p -> p.toString().endsWith(".md"))
-             .filter(p -> species == null || hasPathSegment(p, species))
-             .filter(p -> idSuffixes.isEmpty() || endsWithAny(p.getFileName().toString(), idSuffixes))
-             .forEach(files::add);
-        }
-
-        if (!idSuffixes.isEmpty() && files.size() < idSuffixes.size()) {
-            LOG.warn("Only {} of {} requested RGD ID(s) matched a markdown file under {} — " +
-                    "generate them first, or check --path/--species", files.size(), idSuffixes.size(), root);
-        }
+        // set of filename suffixes; see collectFiles.
+        List<Path> files = collectFiles(root, species, rgdIds);
 
         LOG.info("Embedding {} markdown files under {} (species={}, rgdIds={}, provider={}, model={}, dims={}, threads={})",
                 files.size(), root, species == null ? "all" : species,
-                idSuffixes.isEmpty() ? "all" : String.valueOf(idSuffixes.size()),
+                (rgdIds == null || rgdIds.isEmpty()) ? "all" : String.valueOf(rgdIds.size()),
                 provider, model, dimensions, threadCount);
 
         AtomicInteger embedded = new AtomicInteger();
@@ -173,6 +151,115 @@ public class EmbedService {
                 LOG.error("  FAILED: {}", f);
             }
         }
+    }
+
+    /**
+     * Rewrite {@code report_object} and {@code report_position} from the markdown on disk,
+     * without embedding anything.
+     *
+     * <p>Object metadata is parsed, not embedded, so a change to how it is parsed should not
+     * cost a re-embed. {@code --force} would rewrite the object tables correctly but would
+     * also throw away ~974,000 vectors and buy them all again, for columns the embedding
+     * never touched. This walks the same files, re-derives identity, name and positions, and
+     * upserts — no API calls, no writes to {@code document_embeddings}.</p>
+     *
+     * <p>Safe to re-run: every write is an upsert keyed on the RGD ID, and positions are
+     * cleared per object first so a dropped assembly does not linger.</p>
+     */
+    public void refreshObjects(String outputDir, String subPath, String speciesDir,
+                               List<Integer> rgdIds) throws Exception {
+        Path root = Paths.get(outputDir);
+        if (subPath != null && !subPath.isBlank()) {
+            root = root.resolve(subPath);
+        }
+        if (!Files.isDirectory(root)) {
+            throw new IllegalArgumentException("not a directory: " + root);
+        }
+        String species = (speciesDir != null && !speciesDir.isBlank()) ? speciesDir.trim() : null;
+
+        List<Path> files = collectFiles(root, species, rgdIds);
+        LOG.info("Refreshing object tables from {} markdown files under {} (species={}) — no embedding",
+                files.size(), root, species == null ? "all" : species);
+
+        DocumentEmbeddingDAO dao = new DocumentEmbeddingDAO();
+        AtomicInteger refreshed = new AtomicInteger();
+        AtomicInteger skipped = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+
+        for (Path file : files) {
+            try {
+                String content = Files.readString(file, StandardCharsets.UTF_8);
+                if (!ReportMarkdownChunker.isRgdReport(content)) {
+                    skipped.incrementAndGet();
+                    continue;
+                }
+                String rawName = file.getFileName().toString();
+                String displayName = resolveDisplayName(content, rawName);
+
+                // Same title handling as the embed path, so the chunk breadcrumbs this reads
+                // the object name and positions out of are formed identically.
+                String rgdId = resolveRgdId(displayName, rawName);
+                if (rgdId != null) {
+                    content = injectRgdIdIntoTitle(content, rgdId);
+                }
+
+                List<String> chunks = new ArrayList<>();
+                for (String c : chunker.chunk(content)) {
+                    if (c != null && c.trim().length() >= MIN_CHUNK_CHARS) {
+                        chunks.add(c);
+                    }
+                }
+                if (chunks.isEmpty()) {
+                    skipped.incrementAndGet();
+                    continue;
+                }
+
+                ReportMetadata.Identity identity = ReportMetadata.parseDisplayName(displayName);
+                if (identity == null) {
+                    skipped.incrementAndGet();   // no numeric RGD ID (ontology reports)
+                    continue;
+                }
+
+                writeObjectTables(dao, identity, displayName, chunks);
+                int done = refreshed.incrementAndGet();
+                if (done % 2000 == 0) {
+                    LOG.info("  ... {} objects refreshed", done);
+                }
+            } catch (Exception e) {
+                failed.incrementAndGet();
+                LOG.error("Object refresh failed for {}: {}", file.getFileName(), e.getMessage());
+            }
+        }
+
+        String summary = String.format("Object refresh done. refreshed=%d skipped=%d failed=%d",
+                refreshed.get(), skipped.get(), failed.get());
+        LOG.info(summary);
+        System.out.println(summary);
+    }
+
+    /** The markdown files under {@code root}, narrowed by species sub-directory and RGD ID. */
+    private List<Path> collectFiles(Path root, String species, List<Integer> rgdIds) throws Exception {
+        Set<String> idSuffixes = new HashSet<>();
+        if (rgdIds != null) {
+            for (Integer id : rgdIds) {
+                if (id != null) {
+                    idSuffixes.add("_" + id + ".md");
+                }
+            }
+        }
+        List<Path> files = new ArrayList<>();
+        try (Stream<Path> s = Files.walk(root)) {
+            s.filter(Files::isRegularFile)
+             .filter(p -> p.toString().endsWith(".md"))
+             .filter(p -> species == null || hasPathSegment(p, species))
+             .filter(p -> idSuffixes.isEmpty() || endsWithAny(p.getFileName().toString(), idSuffixes))
+             .forEach(files::add);
+        }
+        if (!idSuffixes.isEmpty() && files.size() < idSuffixes.size()) {
+            LOG.warn("Only {} of {} requested RGD ID(s) matched a markdown file under {} — " +
+                    "generate them first, or check --path/--species", files.size(), idSuffixes.size(), root);
+        }
+        return files;
     }
 
     /** True when {@code fileName} ends with any of {@code suffixes}. */
