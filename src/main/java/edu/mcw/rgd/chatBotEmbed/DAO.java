@@ -7,6 +7,7 @@ import edu.mcw.rgd.dao.impl.AnnotationDAO;
 import edu.mcw.rgd.dao.impl.AssociationDAO;
 import edu.mcw.rgd.dao.impl.GWASCatalogDAO;
 import edu.mcw.rgd.dao.impl.GeneDAO;
+import edu.mcw.rgd.dao.impl.GeneticModelsDAO;
 import edu.mcw.rgd.dao.impl.MapDAO;
 import edu.mcw.rgd.dao.impl.OntologyXDAO;
 import edu.mcw.rgd.dao.impl.PhenominerDAO;
@@ -22,6 +23,7 @@ import edu.mcw.rgd.dao.impl.VariantDAO;
 import edu.mcw.rgd.dao.impl.XdbIdDAO;
 import edu.mcw.rgd.dao.spring.StringMapQuery;
 import edu.mcw.rgd.datamodel.Alias;
+import edu.mcw.rgd.datamodel.models.GeneticModel;
 import edu.mcw.rgd.datamodel.GWASCatalog;
 import edu.mcw.rgd.datamodel.Gene;
 import edu.mcw.rgd.datamodel.GenomicElement;
@@ -75,6 +77,7 @@ public class DAO {
     private final SSLPDAO sslpDAO = new SSLPDAO();
     private final AssociationDAO associationDAO = new AssociationDAO();
     private final GWASCatalogDAO gwasCatalogDAO = new GWASCatalogDAO();
+    private final GeneticModelsDAO geneticModelsDAO = new GeneticModelsDAO();
     private final OntologyXDAO ontologyXDAO = new OntologyXDAO();
     private final SampleDAO sampleDAO = new SampleDAO();   // CarpeNovo datasource (set per call)
     private final PhenominerDAO phenominerDAO = new PhenominerDAO();
@@ -438,6 +441,37 @@ public class DAO {
 
     public List<Alias> getAliases(int rgdId) throws Exception {
         return aliasDAO.getAliases(rgdId);
+    }
+
+    // ---- Genetic models ------------------------------------------------------
+
+    /**
+     * The genetic models for a gene — one row per allele/strain pairing, carrying the allele
+     * symbol, the strain that models it, its background strain and how it was made.
+     *
+     * <p>Source for both the Alleles and Genetic Models lines of a gene's Summary: the two are
+     * the same records read from different columns, so one call serves both.</p>
+     */
+    public List<GeneticModel> getGeneticModels(int geneRgdId) throws Exception {
+        return geneticModelsDAO.getAllModelsByGeneRgdId(geneRgdId);
+    }
+
+    // ---- Is marker for -------------------------------------------------------
+
+    /**
+     * QTLs this object is a marker for.
+     *
+     * <p>Distinct from the QTLs that merely overlap its region: this is the curated statement
+     * that the object marks the QTL, which is the relationship the report page labels
+     * "Is Marker For".</p>
+     */
+    public List<QTL> getQtlsMarkerFor(int rgdId) throws Exception {
+        return qtlDAO.isMarkerFor(rgdId);
+    }
+
+    /** Strains this object is a marker for — the strain half of "Is Marker For". */
+    public List<Strain> getStrainsMarkerFor(int rgdId) throws Exception {
+        return strainDAO.isMarkerFor(rgdId);
     }
 
     // ---- Annotations ---------------------------------------------------------

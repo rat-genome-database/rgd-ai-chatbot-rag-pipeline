@@ -44,7 +44,7 @@
     </bean>
 
     <bean id="manager" class="edu.mcw.rgd.chatBotEmbed.Manager">
-        <property name="version" value="RGD AI chatbot RAG markdown generator -- build Jul 15, 2026"/>
+        <property name="version" value="RGD AI chatbot RAG markdown generator -- build Oct 02, 2026"/>
 
         <!-- Must match the chatbot's report.loader.output-dir so BulkEmbedService sees the files. -->
         <property name="outputDir" value="data/markdown"/>

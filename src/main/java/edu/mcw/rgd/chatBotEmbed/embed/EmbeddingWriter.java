@@ -35,6 +35,17 @@ public class EmbeddingWriter {
     private static final String UPDATE_META_SQL =
             "UPDATE document_embeddings SET rgd_id = ?, section = ? WHERE id = ?";
 
+    /**
+     * Delete a bounded number of rows holding one exact chunk text.
+     *
+     * <p>Bounded because a report may legitimately contain the same chunk text more than once,
+     * and a partial update removes only the surplus copies. Postgres has no {@code DELETE ...
+     * LIMIT}, so the rows are picked by {@code ctid} first.</p>
+     */
+    private static final String DELETE_CHUNK_COPIES_SQL =
+            "DELETE FROM document_embeddings WHERE ctid IN ("
+            + "SELECT ctid FROM document_embeddings WHERE file_name = ? AND chunk = ? LIMIT ?)";
+
     /** Cheap existence probe for a file with rows predating the metadata columns. */
     private static final String NEEDS_META_SQL =
             "SELECT 1 FROM document_embeddings WHERE file_name = ? AND rgd_id IS NULL LIMIT 1";
@@ -101,6 +112,27 @@ public class EmbeddingWriter {
      * holds. A file with no numeric RGD ID never needs the backfill, so it short-circuits
      * without touching the database at all.</p>
      */
+    /**
+     * Remove {@code count} rows of one chunk text from a file, leaving any others in place.
+     *
+     * <p>Used by the partial-update path: a report whose Summary changed keeps every other
+     * chunk's row — and therefore its embedding — instead of being deleted and bought again.</p>
+     *
+     * @return rows actually deleted
+     */
+    public int deleteChunkCopies(String fileName, String chunk, int count) throws SQLException {
+        if (count <= 0) {
+            return 0;
+        }
+        try (Connection con = dataSource.getConnection();
+             PreparedStatement ps = con.prepareStatement(DELETE_CHUNK_COPIES_SQL)) {
+            ps.setString(1, fileName);
+            ps.setString(2, chunk);
+            ps.setInt(3, count);
+            return ps.executeUpdate();
+        }
+    }
+
     public boolean needsMetadata(String fileName, Long rgdId) throws SQLException {
         if (rgdId == null) {
             return false;

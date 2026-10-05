@@ -5,6 +5,7 @@ import edu.mcw.rgd.chatBotEmbed.Md;
 import edu.mcw.rgd.chatBotEmbed.MarkdownWriter;
 import edu.mcw.rgd.chatBotEmbed.ReportDoc;
 import edu.mcw.rgd.datamodel.Alias;
+import edu.mcw.rgd.datamodel.models.GeneticModel;
 import edu.mcw.rgd.datamodel.Gene;
 import edu.mcw.rgd.datamodel.Map;
 import edu.mcw.rgd.datamodel.MapData;
@@ -28,7 +29,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * chunker: real ATX headings (so every chunk carries a heading breadcrumb) and
  * GitHub tables with separator rows (so split tables keep their header).
  *
- * <p>Sections: Summary, Genomic Position (one row per assembly), Aliases,
+ * <p>Sections: Summary (identity, previous names, alleles, genetic models, marker-for,
+ * description),
+ * Genomic Position (one row per assembly), Aliases,
  * Orthologs, and an Annotation block with one sub-section per ontology.</p>
  */
 public class GeneReportGenerator extends AbstractReportGenerator {
@@ -120,7 +123,7 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         return new ReportDoc(rgdId, displayName, MarkdownWriter.safeSymbol(symbol), md.toString());
     }
 
-    private void appendSummary(StringBuilder md, Gene gene, int rgdId, String species) {
+    private void appendSummary(StringBuilder md, Gene gene, int rgdId, String species) throws Exception {
         md.append(Md.heading(2, "Summary"));
         md.append("- **Symbol:** ").append(Utils.defaultString(gene.getSymbol())).append("\n");
         if (!Utils.isStringEmpty(gene.getName())) {
@@ -131,12 +134,110 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         if (!Utils.isStringEmpty(gene.getType())) {
             md.append("- **Gene Type:** ").append(gene.getType()).append("\n");
         }
+
+        String previously = previouslyKnownAs(rgdId);
+        if (!Utils.isStringEmpty(previously)) {
+            md.append("- **Previously known as:** ").append(previously).append("\n");
+        }
+
+        // Alleles and the strains modelling them come from the same rows, read from
+        // different columns, so one query answers both.
+        List<GeneticModel> models = dao.getGeneticModels(rgdId);
+        String alleles = distinctJoined(models, GeneticModel::getAlleleSymbol);
+        if (!Utils.isStringEmpty(alleles)) {
+            md.append("- **Alleles:** ").append(alleles).append("\n");
+        }
+        String geneticModels = distinctJoined(models, GeneticModel::getStrainSymbol);
+        if (!Utils.isStringEmpty(geneticModels)) {
+            md.append("- **Genetic Models:** ").append(geneticModels).append("\n");
+        }
+
+        String markerFor = isMarkerFor(rgdId);
+        if (!Utils.isStringEmpty(markerFor)) {
+            md.append("- **Is Marker For:** ").append(markerFor).append("\n");
+        }
         md.append("\n");
 
+        // Labelled rather than left as bare prose: an unlabelled paragraph reads as narrative
+        // and a retrieved chunk of it gives no clue what it describes.
         String description = firstNonEmpty(gene.getMergedDescription(), gene.getAgrDescription(), gene.getDescription());
         if (!Utils.isStringEmpty(description)) {
-            md.append(description.trim()).append("\n\n");
+            md.append("**Description:** ").append(description.trim()).append("\n\n");
         }
+    }
+
+    /**
+     * Former symbols and names, from the aliases RGD records when nomenclature changes.
+     *
+     * <p>These already reach the Aliases section, but pooled in with every other alias, which
+     * loses the one thing that makes them useful: someone searching an outdated symbol from an
+     * older paper needs to see it named as the previous one, not as an undifferentiated
+     * synonym.</p>
+     */
+    private String previouslyKnownAs(int rgdId) throws Exception {
+        List<Alias> aliases = dao.getAliases(rgdId);
+        if (aliases == null || aliases.isEmpty()) {
+            return "";
+        }
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        for (Alias a : aliases) {
+            String type = Utils.defaultString(a.getTypeName()).toLowerCase();
+            if ((type.equals("old_gene_symbol") || type.equals("old_gene_name"))
+                    && !Utils.isStringEmpty(a.getValue())) {
+                values.add(a.getValue().trim());
+            }
+        }
+        return String.join(", ", values);
+    }
+
+    /**
+     * The QTLs and strains this gene is a curated marker for.
+     *
+     * <p>Kept as one line but labelled by kind, because the two answer different questions —
+     * "which QTLs does this gene mark" and "which strains does it mark" — and an
+     * undifferentiated list of symbols leaves the reader unable to tell which is which.</p>
+     *
+     * <p>Not the same as the QTLs in the gene's region: those merely overlap it, while this is
+     * the curated assertion that the gene marks them.</p>
+     */
+    private String isMarkerFor(int rgdId) throws Exception {
+        LinkedHashSet<String> qtls = new LinkedHashSet<>();
+        for (edu.mcw.rgd.datamodel.QTL q : dao.getQtlsMarkerFor(rgdId)) {
+            if (!Utils.isStringEmpty(q.getSymbol())) {
+                qtls.add(q.getSymbol().trim());
+            }
+        }
+        LinkedHashSet<String> strains = new LinkedHashSet<>();
+        for (Strain s : dao.getStrainsMarkerFor(rgdId)) {
+            if (!Utils.isStringEmpty(s.getSymbol())) {
+                strains.add(s.getSymbol().trim());
+            }
+        }
+
+        List<String> parts = new ArrayList<>();
+        if (!qtls.isEmpty()) {
+            parts.add("QTLs: " + String.join(", ", qtls));
+        }
+        if (!strains.isEmpty()) {
+            parts.add("Strains: " + String.join(", ", strains));
+        }
+        return String.join("; ", parts);
+    }
+
+    /** Distinct non-empty values of one field across the models, in encounter order. */
+    private String distinctJoined(List<GeneticModel> models,
+                                  java.util.function.Function<GeneticModel, String> field) {
+        if (models == null || models.isEmpty()) {
+            return "";
+        }
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        for (GeneticModel m : models) {
+            String value = field.apply(m);
+            if (!Utils.isStringEmpty(value)) {
+                values.add(value.trim());
+            }
+        }
+        return String.join(", ", values);
     }
 
     /**

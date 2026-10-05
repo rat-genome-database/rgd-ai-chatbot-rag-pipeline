@@ -357,10 +357,18 @@ public class EmbedService {
             }
             if (!stored.isEmpty()) {
                 changed.incrementAndGet();   // present but different -> genuinely changed
+
+                // Only some chunks differ: embed only those. Editing one section of a report
+                // leaves every other chunk byte-identical, and an embedding depends on nothing
+                // but the chunk's own text — so re-embedding the rest buys back vectors
+                // identical to the ones being thrown away. On a gene report averaging a dozen
+                // chunks, a Summary change is one call instead of twelve.
+                return partialUpdate(displayName, objectRgdId, identity, chunks, sections,
+                        stored, client, dao, writer);
             }
         }
 
-        // Clean slate so a re-embed replaces rather than duplicates.
+        // Full embed: a new file, or --force. Clean slate so it replaces rather than duplicates.
         dao.deleteByFileName(displayName);
         if (!displayName.equals(rawName)) {
             dao.deleteByFileName(rawName);
@@ -374,6 +382,76 @@ public class EmbedService {
         writer.insert(displayName, objectRgdId, chunks, sections, vectors);
         writeObjectTables(dao, identity, displayName, chunks);
         return chunks.size();
+    }
+
+    /**
+     * Re-embed only the chunks whose text actually changed.
+     *
+     * <p>Chunks are compared by content and by count, so a text appearing twice in a report is
+     * handled as two rows rather than one. Surplus copies are deleted, missing ones embedded
+     * and inserted, and everything unchanged is left untouched — keeping its row, its
+     * embedding and the metadata already on it.</p>
+     *
+     * <p>Row order is not preserved: new rows take new ids and land after the kept ones. That
+     * is fine because retrieval scores each chunk independently and the section is carried on
+     * the row itself. Change detection stays correct too, since the comparison that drives it
+     * is order-sensitive only on the full-embed path, which writes every row in one go.</p>
+     *
+     * @return number of chunks embedded, which is the number of API calls this file cost
+     */
+    private int partialUpdate(String displayName, Long objectRgdId, ReportMetadata.Identity identity,
+                              List<String> chunks, List<String> sections, List<String> stored,
+                              EmbeddingClient client, DocumentEmbeddingDAO dao,
+                              EmbeddingWriter writer) throws Exception {
+        java.util.Map<String, Integer> storedCounts = countByText(stored);
+        java.util.Map<String, Integer> currentCounts = countByText(chunks);
+
+        // Surplus copies of text no longer present (or present fewer times) go first, so a
+        // chunk that merely moved is not counted as both a delete and an insert.
+        int deleted = 0;
+        for (java.util.Map.Entry<String, Integer> e : storedCounts.entrySet()) {
+            int surplus = e.getValue() - currentCounts.getOrDefault(e.getKey(), 0);
+            if (surplus > 0) {
+                deleted += writer.deleteChunkCopies(displayName, e.getKey(), surplus);
+            }
+        }
+
+        // Then the genuinely new text, keeping each chunk beside its own section.
+        List<String> toEmbed = new ArrayList<>();
+        List<String> toEmbedSections = new ArrayList<>();
+        java.util.Map<String, Integer> remaining = new java.util.HashMap<>(storedCounts);
+        for (int i = 0; i < chunks.size(); i++) {
+            String text = chunks.get(i);
+            int left = remaining.getOrDefault(text, 0);
+            if (left > 0) {
+                remaining.put(text, left - 1);   // covered by a row already stored
+            } else {
+                toEmbed.add(text);
+                toEmbedSections.add(sections.get(i));
+            }
+        }
+
+        if (!toEmbed.isEmpty()) {
+            List<float[]> vectors = new ArrayList<>(toEmbed.size());
+            for (String c : toEmbed) {
+                vectors.add(client.embed(c));
+            }
+            writer.insert(displayName, objectRgdId, toEmbed, toEmbedSections, vectors);
+        }
+
+        writeObjectTables(dao, identity, displayName, chunks);
+        LOG.debug("Partial update of '{}': {} chunk(s) embedded, {} row(s) deleted, {} reused",
+                displayName, toEmbed.size(), deleted, chunks.size() - toEmbed.size());
+        return toEmbed.size();
+    }
+
+    /** Occurrence count per distinct chunk text, so repeated text maps to the right row count. */
+    private static java.util.Map<String, Integer> countByText(List<String> texts) {
+        java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+        for (String t : texts) {
+            counts.merge(t, 1, Integer::sum);
+        }
+        return counts;
     }
 
     /**
