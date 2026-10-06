@@ -34,9 +34,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <pre>
  *   run.sh --mode generate --type gene [--species 3] [--mapKeys 380,372] [--limit N] [--rgdId N] [--outDir path]
  *   run.sh --mode generate --type ontology [--ontology MP | --ontAcc DOID:10763,DOID:2841] [--species 3] [--object gene] [--limit N] [--outDir path]
- *   run.sh --mode embed [--path gene] [--species 3] [--rgdId N,N] [--force] [--outDir path]
+ *   run.sh --mode embed [--index qwen] [--path gene] [--species 3] [--rgdId N,N] [--force] [--outDir path]
  *   run.sh --mode refresh-objects [--path strain] [--species 3] [--rgdId N,N] [--outDir path]
  * </pre>
+ *
+ * <p>{@code --index} picks one of the {@code embedServices} configured in AppConfigure.xml
+ * (embedding model + target schema); without it the default {@code embedService} is used.
+ * run.sh pairs it with the matching connections file, whose rgdRag datasource points at
+ * that index's schema.</p>
  *
  * <p>{@code --rgdId} works in both modes: in generate it limits which objects are built,
  * in embed it limits which of the already-generated files are read. Embedding matches on
@@ -51,6 +56,7 @@ public class Manager {
     private List<ReportGenerator> generators = new ArrayList<>();
     private List<TermReportGenerator> termGenerators = new ArrayList<>();
     private EmbedService embedService;
+    private java.util.Map<String, EmbedService> embedServices = new java.util.HashMap<>();
 
     private final Logger log = LogManager.getLogger("status");
 
@@ -85,6 +91,7 @@ public class Manager {
         List<Integer> rgdIdArg = new ArrayList<>();
         int limit = 0;
         String path = null;
+        String index = null;
         boolean force = false;
 
         for (int i = 0; i < args.length; i++) {
@@ -102,6 +109,7 @@ public class Manager {
                 case "--limit":    limit = Integer.parseInt(args[++i]); break;
                 case "--path":     path = args[++i]; break;
                 case "--force":    force = true; break;
+                case "--index":    index = args[++i]; break;
                 case "--outDir":   outputDir = args[++i]; break;
                 default: throw new IllegalArgumentException("unknown argument: " + args[i]);
             }
@@ -112,16 +120,14 @@ public class Manager {
         }
 
         if ("embed".equalsIgnoreCase(mode)) {
-            if (embedService == null) {
-                throw new IllegalStateException("no embedService configured in AppConfigure.xml");
-            }
+            EmbedService service = selectEmbedService(index);
             // Optional species filter: reports are written under a per-species sub-directory named
             // by the species common name (see runGenerate's speciesDir). When --species is given,
             // embed only that species' sub-tree; when omitted, embed every species.
             String speciesDir = speciesProvided
                     ? MarkdownWriter.safeSymbol(SpeciesType.getCommonName(speciesTypeKey)).toLowerCase()
                     : null;
-            embedService.run(outputDir, path, speciesDir, rgdIdArg, force);
+            service.run(outputDir, path, speciesDir, rgdIdArg, force);
             return;
         }
         if ("refresh-objects".equalsIgnoreCase(mode)) {
@@ -393,6 +399,22 @@ public class Manager {
         return result;
     }
 
+    /** The embed config named by {@code --index}, or the default when none was given. */
+    private EmbedService selectEmbedService(String index) {
+        if (index == null) {
+            if (embedService == null) {
+                throw new IllegalStateException("no embedService configured in AppConfigure.xml");
+            }
+            return embedService;
+        }
+        EmbedService service = embedServices.get(index);
+        if (service == null) {
+            throw new IllegalArgumentException("unknown --index '" + index + "' (configured: "
+                    + embedServices.keySet() + ")");
+        }
+        return service;
+    }
+
     // ---- Spring-injected properties ----
 
     public String getVersion() { return version; }
@@ -403,4 +425,5 @@ public class Manager {
     public void setGenerators(List<ReportGenerator> generators) { this.generators = generators; }
     public void setTermGenerators(List<TermReportGenerator> termGenerators) { this.termGenerators = termGenerators; }
     public void setEmbedService(EmbedService embedService) { this.embedService = embedService; }
+    public void setEmbedServices(java.util.Map<String, EmbedService> embedServices) { this.embedServices = embedServices; }
 }

@@ -50,10 +50,51 @@ public class EmbeddingWriter {
     private static final String NEEDS_META_SQL =
             "SELECT 1 FROM document_embeddings WHERE file_name = ? AND rgd_id IS NULL LIMIT 1";
 
+    /**
+     * Where unqualified {@code document_embeddings} resolves on this connection, and the
+     * declared type of its vector column. The schema comes from the datasource's search_path
+     * (e.g. {@code currentSchema=qwen,public}), which no code here controls.
+     */
+    private static final String TARGET_SQL =
+            "SELECT n.nspname, format_type(a.atttypid, a.atttypmod) "
+            + "FROM pg_class c "
+            + "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            + "JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'embedding' "
+            + "WHERE c.oid = to_regclass('document_embeddings')";
+
     private final DataSource dataSource;
 
     public EmbeddingWriter(DataSource dataSource) {
         this.dataSource = dataSource;
+    }
+
+    /**
+     * Refuse to run against the wrong index. Each embedding model has its own schema, and the
+     * one written to is decided by the connections file rather than by this pipeline's config.
+     * Pairing the wrong two would write one model's vectors among another's - with equal
+     * dimensions nothing errors, and retrieval quietly degrades - so check before any writes.
+     */
+    public void verifyTarget(String expectedSchema, int expectedDimensions) throws SQLException {
+        String schema;
+        String vectorType;
+        try (Connection con = dataSource.getConnection();
+             PreparedStatement ps = con.prepareStatement(TARGET_SQL);
+             ResultSet rs = ps.executeQuery()) {
+            if (!rs.next()) {
+                throw new IllegalStateException("document_embeddings is not visible on the rgdRag connection");
+            }
+            schema = rs.getString(1);
+            vectorType = rs.getString(2);
+        }
+        if (!schema.equals(expectedSchema)) {
+            throw new IllegalStateException("document_embeddings resolves to schema '" + schema
+                    + "' but this embed config expects '" + expectedSchema
+                    + "' - check the rgdRag datasource's currentSchema");
+        }
+        if (expectedDimensions > 0 && !vectorType.equals("vector(" + expectedDimensions + ")")) {
+            throw new IllegalStateException(schema + ".document_embeddings.embedding is " + vectorType
+                    + " but the embed config produces " + expectedDimensions + "-dim vectors");
+        }
     }
 
     /**

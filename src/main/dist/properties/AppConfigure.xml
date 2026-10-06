@@ -41,6 +41,27 @@
         <property name="apiKeyEnv" value="OPENAI_API_KEY"/>
 
         <property name="threadCount" value="2"/>
+        <property name="expectedSchema" value="public"/>                 <!-- schema the rgdRag connection must resolve document_embeddings to -->
+    </bean>
+
+    <!--
+      qwen3-embedding:8b on grudge's Ollama, written to the "qwen" schema of rgd_rag.
+      Selected by the run.sh index option (index qwen); run.sh then loads default_db2_qwen.xml, whose rgdRagDataSource
+      URL ends in ?currentSchema=qwen,public. expectedSchema makes a run abort before any write
+      if those two ever disagree.
+
+      Documents are embedded WITHOUT an instruction prefix; Qwen3-Embedding wants one only on
+      queries, which the chatbot adds on its side. dimensions MUST match the chatbot's.
+    -->
+    <bean id="embedServiceQwen" class="edu.mcw.rgd.chatBotEmbed.embed.EmbedService">
+        <property name="provider" value="ollama"/>
+        <property name="baseUrl" value="http://grudge.rgd.mcw.edu:11434"/>
+        <property name="model" value="qwen3-embedding:8b"/>
+        <property name="dimensions" value="1536"/>                       <!-- qwen.document_embeddings.embedding is vector(1536) -->
+        <property name="batchSize" value="32"/>
+        <!-- grudge also serves the chat LLMs; keep concurrent embedding requests low. -->
+        <property name="threadCount" value="2"/>
+        <property name="expectedSchema" value="qwen"/>
     </bean>
 
     <bean id="manager" class="edu.mcw.rgd.chatBotEmbed.Manager">
@@ -72,6 +93,13 @@
         </property>
 
         <property name="embedService" ref="embedService"/>
+
+        <!-- Named embed configs for the run.sh index option; each NAME pairs with properties/default_db2_NAME.xml. -->
+        <property name="embedServices">
+            <map>
+                <entry key="qwen" value-ref="embedServiceQwen"/>
+            </map>
+        </property>
     </bean>
 
 </beans>

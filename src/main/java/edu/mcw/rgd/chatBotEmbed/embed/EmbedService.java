@@ -58,6 +58,10 @@ public class EmbedService {
     private String apiKeyEnv = "OPENAI_API_KEY";
     private String apiKeyFile = "";   // path to a file containing just the API key (takes precedence over the env var)
     private int threadCount = 2;
+    private int batchSize = 32;                // chunks per Ollama request (OpenAI is unbatched)
+    // Schema document_embeddings must resolve to on the rgdRag connection; see
+    // EmbeddingWriter.verifyTarget. Guards against a model/connections-file mismatch.
+    private String expectedSchema = "public";
 
     private final ReportMarkdownChunker chunker = new ReportMarkdownChunker();
 
@@ -90,18 +94,19 @@ public class EmbedService {
             apiKey = resolveApiKey();
         }
 
-        EmbeddingClient client = new EmbeddingClient(provider, baseUrl, model, dimensions, apiKey);
+        EmbeddingClient client = new EmbeddingClient(provider, baseUrl, model, dimensions, apiKey, batchSize);
         DocumentEmbeddingDAO embeddingDAO = new DocumentEmbeddingDAO();
         EmbeddingWriter writer = new EmbeddingWriter(embeddingDAO.getDataSource());
+        writer.verifyTarget(expectedSchema, dimensions);
 //        System.out.println("Total Chuck Count: " +embeddingDAO.getTotalChunkCount());
         // Generated files are named <type>_<symbol>_<id>.md, so an explicit id list becomes a
         // set of filename suffixes; see collectFiles.
         List<Path> files = collectFiles(root, species, rgdIds);
 
-        LOG.info("Embedding {} markdown files under {} (species={}, rgdIds={}, provider={}, model={}, dims={}, threads={})",
-                files.size(), root, species == null ? "all" : species,
+        LOG.info("Embedding {} markdown files under {} into schema {} (species={}, rgdIds={}, provider={}, model={}, dims={}, threads={}, batch={})",
+                files.size(), root, expectedSchema, species == null ? "all" : species,
                 (rgdIds == null || rgdIds.isEmpty()) ? "all" : String.valueOf(rgdIds.size()),
-                provider, model, dimensions, threadCount);
+                provider, model, dimensions, threadCount, batchSize);
 
         AtomicInteger embedded = new AtomicInteger();
         AtomicInteger skipped = new AtomicInteger();
@@ -374,10 +379,7 @@ public class EmbedService {
             dao.deleteByFileName(rawName);
         }
 
-        List<float[]> vectors = new ArrayList<>(chunks.size());
-        for (String c : chunks) {
-            vectors.add(client.embed(c));
-        }
+        List<float[]> vectors = client.embedAll(chunks);
 
         writer.insert(displayName, objectRgdId, chunks, sections, vectors);
         writeObjectTables(dao, identity, displayName, chunks);
@@ -397,7 +399,7 @@ public class EmbedService {
      * the row itself. Change detection stays correct too, since the comparison that drives it
      * is order-sensitive only on the full-embed path, which writes every row in one go.</p>
      *
-     * @return number of chunks embedded, which is the number of API calls this file cost
+     * @return number of chunks embedded
      */
     private int partialUpdate(String displayName, Long objectRgdId, ReportMetadata.Identity identity,
                               List<String> chunks, List<String> sections, List<String> stored,
@@ -432,10 +434,7 @@ public class EmbedService {
         }
 
         if (!toEmbed.isEmpty()) {
-            List<float[]> vectors = new ArrayList<>(toEmbed.size());
-            for (String c : toEmbed) {
-                vectors.add(client.embed(c));
-            }
+            List<float[]> vectors = client.embedAll(toEmbed);
             writer.insert(displayName, objectRgdId, toEmbed, toEmbedSections, vectors);
         }
 
@@ -609,4 +608,7 @@ public class EmbedService {
     public void setApiKeyEnv(String apiKeyEnv) { this.apiKeyEnv = apiKeyEnv; }
     public void setApiKeyFile(String apiKeyFile) { this.apiKeyFile = apiKeyFile; }
     public void setThreadCount(int threadCount) { this.threadCount = threadCount; }
+    public void setBatchSize(int batchSize) { this.batchSize = batchSize; }
+    public void setExpectedSchema(String expectedSchema) { this.expectedSchema = expectedSchema; }
+    public String getExpectedSchema() { return expectedSchema; }
 }
