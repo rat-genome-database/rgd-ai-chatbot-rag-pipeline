@@ -52,8 +52,8 @@ public class EmbeddingWriter {
 
     /**
      * Where unqualified {@code document_embeddings} resolves on this connection, and the
-     * declared type of its vector column. The schema comes from the datasource's search_path
-     * (e.g. {@code currentSchema=qwen,public}), which no code here controls.
+     * declared type of its vector column. The schema comes from the datasource URL's
+     * {@code currentSchema} (e.g. {@code qwen,public}), which no code here controls.
      */
     private static final String TARGET_SQL =
             "SELECT n.nspname, format_type(a.atttypid, a.atttypmod) "
@@ -70,26 +70,28 @@ public class EmbeddingWriter {
 
     /**
      * Refuse to run against the wrong index. Each embedding model has its own schema, and the
-     * one written to is decided by the connections file rather than by this pipeline's config.
-     * Pairing the wrong two would write one model's vectors among another's - with equal
-     * dimensions nothing errors, and retrieval quietly degrades - so check before any writes.
+     * one written to is decided by the datasource's URL in the connections file rather than by
+     * this pipeline's config. Pairing the wrong two would write one model's vectors among
+     * another's - with equal dimensions nothing errors, and retrieval quietly degrades - so
+     * check before any writes.
      */
-    public void verifyTarget(String expectedSchema, int expectedDimensions) throws SQLException {
+    public void verifyTarget(String dataSourceName, String expectedSchema, int expectedDimensions)
+            throws SQLException {
         String schema;
         String vectorType;
         try (Connection con = dataSource.getConnection();
              PreparedStatement ps = con.prepareStatement(TARGET_SQL);
              ResultSet rs = ps.executeQuery()) {
             if (!rs.next()) {
-                throw new IllegalStateException("document_embeddings is not visible on the rgdRag connection");
+                throw new IllegalStateException("document_embeddings is not visible on datasource " + dataSourceName);
             }
             schema = rs.getString(1);
             vectorType = rs.getString(2);
         }
         if (!schema.equals(expectedSchema)) {
-            throw new IllegalStateException("document_embeddings resolves to schema '" + schema
-                    + "' but this embed config expects '" + expectedSchema
-                    + "' - check the rgdRag datasource's currentSchema");
+            throw new IllegalStateException("datasource " + dataSourceName + " resolves document_embeddings to schema '"
+                    + schema + "' but this embed config expects '" + expectedSchema
+                    + "' - check that datasource's currentSchema");
         }
         if (expectedDimensions > 0 && !vectorType.equals("vector(" + expectedDimensions + ")")) {
             throw new IllegalStateException(schema + ".document_embeddings.embedding is " + vectorType

@@ -41,14 +41,15 @@
         <property name="apiKeyEnv" value="OPENAI_API_KEY"/>
 
         <property name="threadCount" value="2"/>
-        <property name="expectedSchema" value="public"/>                 <!-- schema the rgdRag connection must resolve document_embeddings to -->
+        <property name="dataSourceName" value="rgdRag"/>                 <!-- rgdRagDataSource bean in the connections file -->
+        <property name="expectedSchema" value="public"/>                 <!-- schema that datasource must resolve document_embeddings to -->
     </bean>
 
     <!--
       qwen3-embedding:8b on grudge's Ollama, written to the "qwen" schema of rgd_rag.
-      Selected by the run.sh index option (index qwen); run.sh then loads default_db2_qwen.xml, whose rgdRagDataSource
-      URL ends in ?currentSchema=qwen,public. expectedSchema makes a run abort before any write
-      if those two ever disagree.
+      Selected by the run.sh index option (index qwen). Writes through the rgdRagQwenDataSource
+      bean in the same connections file, whose URL ends in ?currentSchema=qwen,public.
+      expectedSchema makes a run abort before any write if the two ever disagree.
 
       Documents are embedded WITHOUT an instruction prefix; Qwen3-Embedding wants one only on
       queries, which the chatbot adds on its side. dimensions MUST match the chatbot's.
@@ -61,6 +62,7 @@
         <property name="batchSize" value="32"/>
         <!-- grudge also serves the chat LLMs; keep concurrent embedding requests low. -->
         <property name="threadCount" value="2"/>
+        <property name="dataSourceName" value="rgdRagQwen"/>
         <property name="expectedSchema" value="qwen"/>
     </bean>
 
@@ -94,7 +96,7 @@
 
         <property name="embedService" ref="embedService"/>
 
-        <!-- Named embed configs for the run.sh index option; each NAME pairs with properties/default_db2_NAME.xml. -->
+        <!-- Named embed configs for the run.sh index option. -->
         <property name="embedServices">
             <map>
                 <entry key="qwen" value-ref="embedServiceQwen"/>

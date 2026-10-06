@@ -1,6 +1,7 @@
 package edu.mcw.rgd.chatBotEmbed.embed;
 
 import edu.mcw.rgd.chatBotEmbed.chunker.ReportMarkdownChunker;
+import edu.mcw.rgd.dao.DataSourceFactory;
 import edu.mcw.rgd.dao.impl.DocumentEmbeddingDAO;
 import edu.mcw.rgd.process.ReportMetadata;
 import edu.mcw.rgd.datamodel.ReportObjectDE;
@@ -59,8 +60,11 @@ public class EmbedService {
     private String apiKeyFile = "";   // path to a file containing just the API key (takes precedence over the env var)
     private int threadCount = 2;
     private int batchSize = 32;                // chunks per Ollama request (OpenAI is unbatched)
-    // Schema document_embeddings must resolve to on the rgdRag connection; see
-    // EmbeddingWriter.verifyTarget. Guards against a model/connections-file mismatch.
+    // rgdcore datasource name: the "<name>DataSource" bean in the connections file, or
+    // jdbc/<name> in JNDI. Each index's datasource sets currentSchema to its own schema.
+    private String dataSourceName = "rgdRag";
+    // Schema document_embeddings must resolve to on that datasource; see
+    // EmbeddingWriter.verifyTarget. Guards against a model/datasource mismatch.
     private String expectedSchema = "public";
 
     private final ReportMarkdownChunker chunker = new ReportMarkdownChunker();
@@ -95,9 +99,10 @@ public class EmbedService {
         }
 
         EmbeddingClient client = new EmbeddingClient(provider, baseUrl, model, dimensions, apiKey, batchSize);
-        DocumentEmbeddingDAO embeddingDAO = new DocumentEmbeddingDAO();
+        DocumentEmbeddingDAO embeddingDAO = new DocumentEmbeddingDAO(
+                DataSourceFactory.getInstance().getDataSource(dataSourceName));
         EmbeddingWriter writer = new EmbeddingWriter(embeddingDAO.getDataSource());
-        writer.verifyTarget(expectedSchema, dimensions);
+        writer.verifyTarget(dataSourceName, expectedSchema, dimensions);
 //        System.out.println("Total Chuck Count: " +embeddingDAO.getTotalChunkCount());
         // Generated files are named <type>_<symbol>_<id>.md, so an explicit id list becomes a
         // set of filename suffixes; see collectFiles.
@@ -610,5 +615,6 @@ public class EmbedService {
     public void setThreadCount(int threadCount) { this.threadCount = threadCount; }
     public void setBatchSize(int batchSize) { this.batchSize = batchSize; }
     public void setExpectedSchema(String expectedSchema) { this.expectedSchema = expectedSchema; }
+    public void setDataSourceName(String dataSourceName) { this.dataSourceName = dataSourceName; }
     public String getExpectedSchema() { return expectedSchema; }
 }

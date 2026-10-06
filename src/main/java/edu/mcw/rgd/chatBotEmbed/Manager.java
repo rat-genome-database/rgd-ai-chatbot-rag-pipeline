@@ -39,9 +39,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * </pre>
  *
  * <p>{@code --index} picks one of the {@code embedServices} configured in AppConfigure.xml
- * (embedding model + target schema); without it the default {@code embedService} is used.
- * run.sh pairs it with the matching connections file, whose rgdRag datasource points at
- * that index's schema.</p>
+ * (embedding model, datasource and target schema); without it the default
+ * {@code embedService} is used.</p>
  *
  * <p>{@code --rgdId} works in both modes: in generate it limits which objects are built,
  * in embed it limits which of the already-generated files are read. Embedding matches on
