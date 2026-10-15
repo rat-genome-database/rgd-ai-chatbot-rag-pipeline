@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <pre>
  *   run.sh --mode generate --type gene [--species 3] [--mapKeys 380,372] [--limit N] [--rgdId N] [--outDir path]
  *   run.sh --mode generate --type ontology [--ontology MP | --ontAcc DOID:10763,DOID:2841] [--species 3] [--object gene] [--limit N] [--outDir path]
+ *   run.sh --mode embed --path obo [--ontology DOID] [--force]
  *   run.sh --mode embed [--index qwen] [--path gene] [--species 3] [--rgdId N,N] [--force] [--outDir path]
  *   run.sh --mode refresh-objects [--path strain] [--species 3] [--rgdId N,N] [--outDir path]
  * </pre>
@@ -56,6 +57,8 @@ public class Manager {
     private List<TermReportGenerator> termGenerators = new ArrayList<>();
     private EmbedService embedService;
     private java.util.Map<String, EmbedService> embedServices = new java.util.HashMap<>();
+    /** Which embedServices entry a run uses when --index is not given. */
+    private String defaultIndex = "openai";
 
     private final Logger log = LogManager.getLogger("status");
 
@@ -120,6 +123,13 @@ public class Manager {
 
         if ("embed".equalsIgnoreCase(mode)) {
             EmbedService service = selectEmbedService(index);
+            // OBO files are produced by a separate pipeline, so there is nothing to generate and
+            // no markdown on disk: build each term's report in memory and embed it directly.
+            // Restrict to one ontology with --ontology (e.g. DOID).
+            if ("obo".equalsIgnoreCase(path)) {
+                service.runObo(ontologyArg, force);
+                return;
+            }
             // Optional species filter: reports are written under a per-species sub-directory named
             // by the species common name (see runGenerate's speciesDir). When --species is given,
             // embed only that species' sub-tree; when omitted, embed every species.
@@ -130,15 +140,15 @@ public class Manager {
             return;
         }
         if ("refresh-objects".equalsIgnoreCase(mode)) {
-            if (embedService == null) {
-                throw new IllegalStateException("no embedService configured in AppConfigure.xml");
-            }
-            // Rebuilds report_object/report_position from the markdown already on disk.
-            // No embedding, so a change to how metadata is parsed costs nothing to apply.
+            // Resolved the same way as an embed run, so this keeps working when the only
+            // configuration is the embedServices map. Which index is picked barely matters:
+            // report_object and report_position are model-independent and every index's
+            // datasource resolves them to the one shared copy in public.
+            EmbedService service = selectEmbedService(index);
             String speciesDir = speciesProvided
                     ? MarkdownWriter.safeSymbol(SpeciesType.getCommonName(speciesTypeKey)).toLowerCase()
                     : null;
-            embedService.refreshObjects(outputDir, path, speciesDir, rgdIdArg);
+            service.refreshObjects(outputDir, path, speciesDir, rgdIdArg);
             return;
         }
         if (!"generate".equalsIgnoreCase(mode)) {
@@ -398,20 +408,41 @@ public class Manager {
         return result;
     }
 
-    /** The embed config named by {@code --index}, or the default when none was given. */
+    /**
+     * The embed service for a run: the named index, or the default when none was asked for.
+     *
+     * <p>Without {@code --index} the standalone {@code embedService} bean wins — that is the
+     * OpenAI index, and an ordinary run must keep writing there. Only an explicit
+     * {@code --index} sends vectors to another schema. The {@code defaultIndex} entry
+     * ("openai") in {@code embedServices} is consulted only when no standalone bean exists,
+     * so an installation that configures every index in the map still has a default.</p>
+     *
+     * <p>Deliberately no "if only one index is configured, use it" rule: with just a qwen
+     * entry present that would quietly send a routine run into the qwen schema. Writing a
+     * model's vectors into another model's index is both expensive to undo and hard to
+     * notice, so an ambiguous default fails instead of guessing.</p>
+     */
     private EmbedService selectEmbedService(String index) {
-        if (index == null) {
-            if (embedService == null) {
-                throw new IllegalStateException("no embedService configured in AppConfigure.xml");
+        if (index != null) {
+            EmbedService service = embedServices.get(index);
+            if (service == null) {
+                throw new IllegalArgumentException("unknown --index '" + index + "' (configured: "
+                        + embedServices.keySet() + ")");
             }
+            return service;
+        }
+
+        if (embedService != null) {
             return embedService;
         }
-        EmbedService service = embedServices.get(index);
-        if (service == null) {
-            throw new IllegalArgumentException("unknown --index '" + index + "' (configured: "
-                    + embedServices.keySet() + ")");
+        EmbedService service = embedServices.get(defaultIndex);
+        if (service != null) {
+            return service;
         }
-        return service;
+        throw new IllegalStateException("no default embed service: AppConfigure.xml has no "
+                + "standalone embedService bean and no '" + defaultIndex + "' entry in "
+                + "embedServices (configured: " + embedServices.keySet()
+                + ") - pass --index explicitly, or set defaultIndex");
     }
 
     // ---- Spring-injected properties ----
@@ -425,4 +456,5 @@ public class Manager {
     public void setTermGenerators(List<TermReportGenerator> termGenerators) { this.termGenerators = termGenerators; }
     public void setEmbedService(EmbedService embedService) { this.embedService = embedService; }
     public void setEmbedServices(java.util.Map<String, EmbedService> embedServices) { this.embedServices = embedServices; }
+    public void setDefaultIndex(String defaultIndex) { this.defaultIndex = defaultIndex; }
 }

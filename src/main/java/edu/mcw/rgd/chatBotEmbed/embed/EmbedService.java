@@ -1,6 +1,7 @@
 package edu.mcw.rgd.chatBotEmbed.embed;
 
 import edu.mcw.rgd.chatBotEmbed.chunker.ReportMarkdownChunker;
+import edu.mcw.rgd.chatBotEmbed.obo.OboReportBuilder;
 import edu.mcw.rgd.dao.DataSourceFactory;
 import edu.mcw.rgd.dao.impl.DocumentEmbeddingDAO;
 import edu.mcw.rgd.process.ReportMetadata;
@@ -66,6 +67,9 @@ public class EmbedService {
     // Schema document_embeddings must resolve to on that datasource; see
     // EmbeddingWriter.verifyTarget. Guards against a model/datasource mismatch.
     private String expectedSchema = "public";
+    // Directory of *.obo files for runObo. They are produced by a separate pipeline, so this
+    // path is read-only here and holds no generated markdown.
+    private String oboDir = "data/markdown/ontology/obo";
 
     private final ReportMarkdownChunker chunker = new ReportMarkdownChunker();
 
@@ -159,6 +163,98 @@ public class EmbedService {
             LOG.error("{} file(s) failed to embed:", failedFiles.size());
             for (String f : failedFiles) {
                 LOG.error("  FAILED: {}", f);
+            }
+        }
+    }
+
+    /**
+     * Embed ontology-term reports built straight from the OBO files in {@code oboDir}.
+     *
+     * <p>OBO files come from a separate pipeline, so there is no generate step and no markdown
+     * on disk: each term's report is built in memory by {@link OboReportBuilder} and handed to
+     * the same {@link #processDocument} the file path uses. Everything downstream is therefore
+     * unchanged — report detection, chunking, per-chunk sections, change detection and the
+     * partial re-embed of only the chunks whose text differs.</p>
+     *
+     * <p>Change detection is what makes this cheap to re-run. A refreshed OBO file typically
+     * touches a handful of terms, and only those terms' changed chunks are re-embedded; the rest
+     * cost one indexed lookup each.</p>
+     *
+     * @param ontologyFilter an accession prefix such as {@code "DOID"}, or null/blank for every
+     *                       term in every {@code *.obo} file found
+     */
+    public void runObo(String ontologyFilter, boolean force) throws Exception {
+        String apiKey = null;
+        if ("openai".equalsIgnoreCase(provider)) {
+            apiKey = resolveApiKey();
+        }
+
+        OboReportBuilder builder = new OboReportBuilder(oboDir);
+        List<String> accessions = builder.accessions(ontologyFilter);
+
+        EmbeddingClient client = new EmbeddingClient(provider, baseUrl, model, dimensions, apiKey, batchSize);
+        DocumentEmbeddingDAO embeddingDAO = new DocumentEmbeddingDAO(
+                DataSourceFactory.getInstance().getDataSource(dataSourceName));
+        EmbeddingWriter writer = new EmbeddingWriter(embeddingDAO.getDataSource());
+        writer.verifyTarget(dataSourceName, expectedSchema, dimensions);
+
+        LOG.info("Embedding {} OBO term(s) from {} into schema {} (ontology={}, provider={}, model={}, dims={}, threads={}, batch={})",
+                accessions.size(), oboDir, expectedSchema,
+                (ontologyFilter == null || ontologyFilter.isBlank()) ? "all" : ontologyFilter,
+                provider, model, dimensions, threadCount, batchSize);
+
+        AtomicInteger embedded = new AtomicInteger();
+        AtomicInteger skipped = new AtomicInteger();
+        AtomicInteger changed = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+        AtomicInteger chunksWritten = new AtomicInteger();
+        List<String> failedTerms = Collections.synchronizedList(new ArrayList<>());
+
+        ExecutorService pool = Executors.newFixedThreadPool(threadCount);
+        List<Future<?>> futures = new ArrayList<>(accessions.size());
+        for (String accId : accessions) {
+            final String acc = accId;
+            futures.add(pool.submit(() -> {
+                try {
+                    String body = builder.fileBody(acc);
+                    if (body == null) {
+                        skipped.incrementAndGet();
+                        return;
+                    }
+                    // rawName mirrors the file name a generate step would have produced, so log
+                    // lines and the legacy file-name cleanup read the same as the file path's.
+                    String rawName = "obo_" + acc.replace(':', '_') + ".md";
+                    int n = processDocument(rawName, body, client, embeddingDAO, writer, force, skipped, changed);
+                    if (n >= 0) {
+                        int done = embedded.incrementAndGet();
+                        chunksWritten.addAndGet(n);
+                        if (done % 1000 == 0) {
+                            LOG.info("  ... {} term(s) embedded ({} chunks so far)", done, chunksWritten.get());
+                        }
+                    }
+                } catch (Exception e) {
+                    failed.incrementAndGet();
+                    failedTerms.add(acc + " — " + e.getMessage());
+                    LOG.error("Embed failed for {}: {}", acc, e.getMessage());
+                    LOG.debug("Embed failure detail for {}", acc, e);
+                }
+            }));
+        }
+        for (Future<?> f : futures) {
+            try { f.get(); } catch (Exception ignore) { /* per-term errors already logged */ }
+        }
+        pool.shutdown();
+        pool.awaitTermination(12, TimeUnit.HOURS);
+
+        String summary = String.format("OBO embed done. terms=%d (new=%d changed=%d) skipped=%d failed=%d chunks=%d",
+                embedded.get(), embedded.get() - changed.get(), changed.get(), skipped.get(), failed.get(), chunksWritten.get());
+        LOG.info(summary);
+        System.out.println(summary);
+
+        if (!failedTerms.isEmpty()) {
+            LOG.error("{} term(s) failed to embed:", failedTerms.size());
+            for (String t : failedTerms) {
+                LOG.error("  FAILED: {}", t);
             }
         }
     }
@@ -298,6 +394,23 @@ public class EmbedService {
                             AtomicInteger skipped, AtomicInteger changed) throws Exception {
         String content = Files.readString(file, StandardCharsets.UTF_8);
         String rawName = file.getFileName().toString();
+        return processDocument(rawName, content, client, dao, writer, force, skipped, changed);
+    }
+
+    /**
+     * Embed one report, wherever its text came from.
+     *
+     * <p>Split out of {@link #processFile} so a report built in memory — the OBO path, whose
+     * source files are generated by another pipeline and never converted to markdown on disk —
+     * goes through identical report detection, identity resolution, chunking and change
+     * detection. {@code rawName} is only used for logging and for clearing a legacy row keyed
+     * on the file name instead of the display name.</p>
+     *
+     * @return chunks written, or -1 when the report was skipped
+     */
+    private int processDocument(String rawName, String content, EmbeddingClient client,
+                                DocumentEmbeddingDAO dao, EmbeddingWriter writer, boolean force,
+                                AtomicInteger skipped, AtomicInteger changed) throws Exception {
         String displayName = resolveDisplayName(content, rawName);
 
         if (!ReportMarkdownChunker.isRgdReport(content)) {
@@ -615,6 +728,7 @@ public class EmbedService {
     public void setThreadCount(int threadCount) { this.threadCount = threadCount; }
     public void setBatchSize(int batchSize) { this.batchSize = batchSize; }
     public void setExpectedSchema(String expectedSchema) { this.expectedSchema = expectedSchema; }
+    public void setOboDir(String oboDir) { this.oboDir = oboDir; }
     public void setDataSourceName(String dataSourceName) { this.dataSourceName = dataSourceName; }
     public String getExpectedSchema() { return expectedSchema; }
 }

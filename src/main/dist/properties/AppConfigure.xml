@@ -43,6 +43,10 @@
         <property name="threadCount" value="2"/>
         <property name="dataSourceName" value="rgdRag"/>                 <!-- rgdRagDataSource bean in the connections file -->
         <property name="expectedSchema" value="public"/>                 <!-- schema that datasource must resolve document_embeddings to -->
+
+        <!-- "-mode embed -path obo": directory of *.obo files, produced by a separate
+             pipeline. Term reports are built in memory and embedded; nothing is written here. -->
+        <property name="oboDir" value="data/markdown/ontology/obo"/>
     </bean>
 
     <!--
@@ -64,6 +68,7 @@
         <property name="threadCount" value="2"/>
         <property name="dataSourceName" value="rgdRagQwen"/>
         <property name="expectedSchema" value="qwen"/>
+        <property name="oboDir" value="data/markdown/ontology/obo"/>
     </bean>
 
     <bean id="manager" class="edu.mcw.rgd.chatBotEmbed.Manager">
@@ -90,7 +95,7 @@
         <!-- Accession-keyed generators (ontology terms), run on Manager's term path. -->
         <property name="termGenerators">
             <list>
-                <ref bean="ontologyReportGenerator"/>
+                <ref bean="ontologyReportGenerator"/>
             </list>
         </property>
 
