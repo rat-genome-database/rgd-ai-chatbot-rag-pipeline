@@ -668,4 +668,113 @@ public class DAO {
         variantDAO.setDataSource(DataSourceFactory.getInstance().getCarpeNovoDataSource());
         return variantDAO.hasDamagingVariants(sampleId, String.valueOf(mapKey));
     }
+
+    // ---- Alleles, curator notes, candidate genes ---------------------------------
+
+    /** Active allele genes of a species; {@link #getActiveGenes} leaves these out. */
+    public List<Gene> getActiveAlleles(int speciesTypeKey) throws Exception {
+        return geneDAO.getActiveAlleles(speciesTypeKey);
+    }
+
+    /**
+     * An object's public curator notes (NOTES with PUBLIC_Y_N='Y'), in database order. Private
+     * notes are internal curation remarks and never leave RGD.
+     */
+    public List<Note> getPublicNotes(int rgdId) throws Exception {
+        List<Note> pub = new ArrayList<>();
+        for (Note n : notesDAO.getNotes(rgdId)) {
+            if ("Y".equalsIgnoreCase(n.getPublicYN()) && n.getNotes() != null && !n.getNotes().isBlank()) {
+                pub.add(n);
+            }
+        }
+        return pub;
+    }
+
+    /** Genes curated as candidate genes for a QTL (the QTL report's Candidate Gene Status). */
+    public List<Gene> getCandidateGenesForQtl(int qtlRgdId) throws Exception {
+        return associationDAO.getGeneAssociationsByQTL(qtlRgdId);
+    }
+
+    /** QTLs a gene is a curated candidate gene for; takes the gene key, not its RGD ID. */
+    public List<QTL> getQtlsForCandidateGene(int geneKey) throws Exception {
+        return associationDAO.getQtlAssociationsByGene(geneKey);
+    }
+
+    // ---- Pathway diagrams ----------------------------------------------------------
+
+    private final edu.mcw.rgd.dao.impl.PathwayDAO pathwayDAO = new edu.mcw.rgd.dao.impl.PathwayDAO();
+
+    /** Pathway-ontology accessions that have a curated diagram page (the PATHWAY table). */
+    public List<String> getPathwayAccIds() throws Exception {
+        return pathwayDAO.getPathwayList();
+    }
+
+    /** A curated pathway with its description, categories, objects and references; null when unknown. */
+    public edu.mcw.rgd.datamodel.Pathway getPathwayInfo(String accId) throws Exception {
+        return pathwayDAO.getPathwayInfo(accId);
+    }
+
+    // ---- References ----------------------------------------------------------------
+
+    public Reference getReference(int rgdId) throws Exception {
+        return referenceDAO.getReference(rgdId);
+    }
+
+    public List<edu.mcw.rgd.datamodel.Author> getAuthors(int refKey) throws Exception {
+        return referenceDAO.getAuthors(refKey);
+    }
+
+    /** RGD IDs of active references cited by at least one RGD-curated annotation. */
+    public List<Integer> getCuratedReferenceRgdIds() throws Exception {
+        return referenceDAO.getRgdIdsOfReferencesWithCuratedAnnotations();
+    }
+
+    /** Every annotation that cites a reference. */
+    public List<Annotation> getAnnotationsByReference(int refRgdId) throws Exception {
+        return annotationDAO.getAnnotationsByReference(refRgdId);
+    }
+
+    // ---- Cell lines ----------------------------------------------------------------
+
+    private final edu.mcw.rgd.dao.impl.CellLineDAO cellLineDAO = new edu.mcw.rgd.dao.impl.CellLineDAO();
+
+    public List<edu.mcw.rgd.datamodel.CellLine> getActiveCellLines() throws Exception {
+        return cellLineDAO.getActiveCellLines();
+    }
+
+    public edu.mcw.rgd.datamodel.CellLine getCellLine(int rgdId) throws Exception {
+        return cellLineDAO.getCellLine(rgdId);
+    }
+
+    // ---- PhenoMiner expected ranges --------------------------------------------------
+
+    private final edu.mcw.rgd.dao.impl.PhenominerExpectedRangeDao expectedRangeDao =
+            new edu.mcw.rgd.dao.impl.PhenominerExpectedRangeDao();
+    private final edu.mcw.rgd.dao.impl.PhenominerStrainGroupDao strainGroupDao =
+            new edu.mcw.rgd.dao.impl.PhenominerStrainGroupDao();
+    private final java.util.Map<Integer, String> strainGroupNames = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Clinical measurement (CMO) accessions that have expected ranges. */
+    public List<String> getExpectedRangeMeasurements() throws Exception {
+        return expectedRangeDao.getDistinctClinicalMeasurementOntIds();
+    }
+
+    /** Every expected range recorded for one clinical measurement. */
+    public List<edu.mcw.rgd.datamodel.phenominerExpectedRange.PhenominerExpectedRange> getExpectedRanges(String cmoAccId)
+            throws Exception {
+        return expectedRangeDao.getExpectedRangesByCMId(cmoAccId);
+    }
+
+    /** Display name of a PhenoMiner strain group, cached; "" when unknown. */
+    public String getStrainGroupName(int strainGroupId) throws Exception {
+        String cached = strainGroupNames.get(strainGroupId);
+        if (cached != null) {
+            return cached;
+        }
+        List<edu.mcw.rgd.datamodel.phenominerExpectedRange.PhenominerStrainGroup> groups =
+                strainGroupDao.getStrainGroupById(strainGroupId);
+        String name = (groups == null || groups.isEmpty() || groups.get(0).getName() == null) ? "" : groups.get(0).getName();
+        strainGroupNames.put(strainGroupId, name);
+        return name;
+    }
 }

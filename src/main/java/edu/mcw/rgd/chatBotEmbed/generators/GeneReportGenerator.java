@@ -65,12 +65,16 @@ public class GeneReportGenerator extends AbstractReportGenerator {
 
     @Override
     public List<Integer> getRgdIds(int speciesTypeKey) throws Exception {
-        List<Gene> genes = dao.getActiveGenes(speciesTypeKey);
-        List<Integer> ids = new ArrayList<>(genes.size());
+        // Alleles are genes in RGD (gene type "allele", with their own gene report page) but
+        // getActiveGenes leaves them out; add them so allele-level questions can be answered.
+        // Splice variants stay out: they are bare records with little beyond a parent gene.
+        List<Gene> genes = new ArrayList<>(dao.getActiveGenes(speciesTypeKey));
+        genes.addAll(dao.getActiveAlleles(speciesTypeKey));
+        LinkedHashSet<Integer> ids = new LinkedHashSet<>(genes.size());
         for (Gene g : genes) {
             ids.add(g.getRgdId());
         }
-        return ids;
+        return new ArrayList<>(ids);
     }
 
     @Override
@@ -84,8 +88,10 @@ public class GeneReportGenerator extends AbstractReportGenerator {
             return null;   // withdrawn / retired — don't embed it
         }
 
-        String symbol = Utils.defaultString(gene.getSymbol());
-        String name = Utils.defaultString(gene.getName());
+        // Allele symbols carry HTML superscripts (Sptlc3<sup>Tn(sb-T2/Bart3)2.147Mcwi</sup>); use the
+        // tagless form, as strain reports do, for the title, file name and display name.
+        String symbol = stripHtml(Utils.defaultString(gene.getSymbol()));
+        String name = stripHtml(Utils.defaultString(gene.getName()));
         String species = SpeciesType.getCommonName(gene.getSpeciesTypeKey());
 
         StringBuilder md = new StringBuilder(4096);
@@ -101,15 +107,20 @@ public class GeneReportGenerator extends AbstractReportGenerator {
           .append(Md.link("Rat Genome Database (RGD)", GENE_REPORT_URL + rgdId))
           .append("\n\n---\n\n");
 
-        appendSummary(md, gene, rgdId, species);
+        appendSummary(md, gene, symbol, name, rgdId, species);
         appendPositions(md, gene, assemblies);
         appendAliases(md, rgdId);
         appendOrthologs(md, rgdId);
         appendAnnotations(md, rgdId, ONTOLOGY_SECTIONS);
+        appendCuratorNotes(md, rgdId, java.util.Set.of());
         appendVariantCount(md, gene);
         appendDamagingVariants(md, rgdId);
         appendReferences(md, rgdId);
-        appendQtlsInRegion(md, gene.getRgdId(), gene.getSpeciesTypeKey());
+        // Human "QTLs" are GWAS associations, thousands per region; listing them on every human
+        // gene floods the index with rows that say nothing about the gene itself.
+        if (gene.getSpeciesTypeKey() != SpeciesType.HUMAN) {
+            appendQtlsInRegion(md, gene.getRgdId(), gene.getSpeciesTypeKey());
+        }
         appendNucleotideSequences(md, gene);
         appendProteinSequences(md, gene);
         appendExternalDbLinks(md, gene.getRgdId(), gene.getSpeciesTypeKey());
@@ -123,11 +134,11 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         return new ReportDoc(rgdId, displayName, MarkdownWriter.safeSymbol(symbol), md.toString());
     }
 
-    private void appendSummary(StringBuilder md, Gene gene, int rgdId, String species) throws Exception {
+    private void appendSummary(StringBuilder md, Gene gene, String symbol, String name, int rgdId, String species) throws Exception {
         md.append(Md.heading(2, "Summary"));
-        md.append("- **Symbol:** ").append(Utils.defaultString(gene.getSymbol())).append("\n");
-        if (!Utils.isStringEmpty(gene.getName())) {
-            md.append("- **Name:** ").append(gene.getName()).append("\n");
+        md.append("- **Symbol:** ").append(symbol).append("\n");
+        if (!name.isEmpty()) {
+            md.append("- **Name:** ").append(name).append("\n");
         }
         md.append("- **RGD ID:** ").append(rgdId).append("\n");
         md.append("- **Species:** ").append(species).append("\n");
@@ -156,6 +167,11 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         if (!Utils.isStringEmpty(markerFor)) {
             md.append("- **Is Marker For:** ").append(markerFor).append("\n");
         }
+
+        String candidateFor = candidateGeneFor(gene);
+        if (!Utils.isStringEmpty(candidateFor)) {
+            md.append("- **Candidate Gene For:** ").append(candidateFor).append("\n");
+        }
         md.append("\n");
 
         // Labelled rather than left as bare prose: an unlabelled paragraph reads as narrative
@@ -164,6 +180,29 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         if (!Utils.isStringEmpty(description)) {
             md.append("**Description:** ").append(description.trim()).append("\n\n");
         }
+
+        // The merged/AGR description is generated from annotations and replaces the one RGD
+        // curators wrote, which often says more (function, disease involvement, expression).
+        // Keep the curated one too, unless the description above already contains it.
+        String curated = Utils.defaultString(gene.getDescription()).trim();
+        if (!curated.isEmpty() && !description.trim().contains(curated)) {
+            md.append("**RGD Curated Description:** ").append(curated).append("\n\n");
+        }
+    }
+
+    /**
+     * QTLs this gene is a curated candidate gene for — the "Candidate Gene Status" the QTL report
+     * shows. Unlike QTLs in Region (overlap only), this is a curator's assertion that the gene
+     * may underlie the QTL.
+     */
+    private String candidateGeneFor(Gene gene) throws Exception {
+        LinkedHashSet<String> qtls = new LinkedHashSet<>();
+        for (edu.mcw.rgd.datamodel.QTL q : dao.getQtlsForCandidateGene(gene.getKey())) {
+            if (!Utils.isStringEmpty(q.getSymbol())) {
+                qtls.add(Md.link(q.getSymbol().trim(), QTL_REPORT_URL + q.getRgdId()));
+            }
+        }
+        return String.join(", ", qtls);
     }
 
     /**
@@ -222,6 +261,11 @@ public class GeneReportGenerator extends AbstractReportGenerator {
             parts.add("Strains: " + String.join(", ", strains));
         }
         return String.join("; ", parts);
+    }
+
+    /** Remove HTML tags (e.g. {@code <sup>}, {@code <i>}) from a string, collapsing to plain text. */
+    private static String stripHtml(String s) {
+        return s.replaceAll("<[^>]*>", "").trim();
     }
 
     /** Distinct non-empty values of one field across the models, in encounter order. */

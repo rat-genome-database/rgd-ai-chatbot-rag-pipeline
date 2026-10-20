@@ -118,6 +118,7 @@ public class StrainReportGenerator extends AbstractReportGenerator {
         appendSummary(md, strain, rgdId);
         appendHighlights(md, strain);
         appendAnnotations(md, rgdId, ONTOLOGY_SECTIONS);
+        appendCuratorNotes(md, rgdId, java.util.Set.of());
         appendRelatedPhenotypeData(md, strain);
         appendReferences(md, rgdId);
         appendRegion(md, strain);

@@ -6,6 +6,7 @@ import edu.mcw.rgd.chatBotEmbed.ReportGenerator;
 import edu.mcw.rgd.datamodel.MapData;
 import edu.mcw.rgd.datamodel.MappedQTL;
 import edu.mcw.rgd.datamodel.NomenclatureEvent;
+import edu.mcw.rgd.datamodel.Note;
 import edu.mcw.rgd.datamodel.QTL;
 import edu.mcw.rgd.datamodel.Reference;
 import edu.mcw.rgd.datamodel.Xdb;
@@ -45,6 +46,12 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
 
     /** Only apply the evidence filter to annotation sets larger than this. */
     private static final int EVIDENCE_FILTER_THRESHOLD = 100;
+
+    /** Columns of every full annotation table; see {@link #annotationRows}. */
+    protected static final List<String> ANNOTATION_HEADERS = List.of("Term", "Qualifier", "Evidence", "Reference", "Notes");
+
+    /** Longest curator note kept in an annotation table cell. */
+    private static final int MAX_ANNOTATION_NOTES = 300;
 
     protected final DAO dao;
 
@@ -100,7 +107,7 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
         List<List<String>> manualRows = annotationRows(manual);
         if (!manualRows.isEmpty()) {
             md.append(Md.heading(3, "Manual Disease Annotations"));
-            md.append(Md.table(List.of("Term", "Qualifier", "Evidence", "Reference"), manualRows));
+            md.append(Md.table(ANNOTATION_HEADERS, manualRows));
         }
 
         // Imported — overview: distinct disease -> contributing sources.
@@ -133,7 +140,7 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
             return;
         }
         md.append(Md.heading(3, title));
-        md.append(Md.table(List.of("Term", "Qualifier", "Evidence", "Reference"), rows));
+        md.append(Md.table(ANNOTATION_HEADERS, rows));
     }
 
     /**
@@ -159,17 +166,34 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
         return kept;
     }
 
-    /** Full annotation table rows (Term | Qualifier | Evidence | Reference), deduplicated. */
+    /**
+     * Full annotation table rows (Term | Qualifier | Evidence | Reference | Notes), deduplicated.
+     *
+     * <p>Notes are the curator's free text on the annotation — for disease annotations the
+     * kind of evidence ("protein:increased expression:serum"), for GO the specifics. Only
+     * RGD-curated notes are kept: imported annotations' notes are mostly the source's own
+     * identifiers (e.g. {@code MGI:...}), which say nothing to a reader.</p>
+     */
     protected List<List<String>> annotationRows(List<Annotation> annotations) {
-        // Collapse duplicates that differ only by reference/source.
+        // Collapse duplicates that differ only by reference/source, pooling their notes.
         LinkedHashMap<String, Annotation> unique = new LinkedHashMap<>();
+        LinkedHashMap<String, LinkedHashSet<String>> notes = new LinkedHashMap<>();
         for (Annotation a : annotations) {
             String key = a.getTermAcc() + "|" + Utils.defaultString(a.getQualifier()) + "|" + Utils.defaultString(a.getEvidence());
             unique.putIfAbsent(key, a);
+            LinkedHashSet<String> rowNotes = notes.computeIfAbsent(key, k -> new LinkedHashSet<>());
+            if ("RGD".equalsIgnoreCase(a.getDataSrc()) && !Utils.isStringEmpty(a.getNotes())) {
+                rowNotes.add(a.getNotes().trim());
+            }
         }
 
         List<List<String>> rows = new ArrayList<>();
-        for (Annotation a : unique.values()) {
+        for (java.util.Map.Entry<String, Annotation> e : unique.entrySet()) {
+            Annotation a = e.getValue();
+            String rowNotes = String.join("; ", notes.get(e.getKey()));
+            if (rowNotes.length() > MAX_ANNOTATION_NOTES) {
+                rowNotes = rowNotes.substring(0, MAX_ANNOTATION_NOTES).trim() + "...";
+            }
             String term = Utils.isStringEmpty(a.getTermAcc())
                     ? Md.cell(a.getTerm())
                     : Md.link(Utils.defaultString(a.getTerm()), ONTOLOGY_TERM_URL + a.getTermAcc());
@@ -180,10 +204,72 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
                     term,
                     Md.cell(Utils.defaultString(a.getQualifier())),
                     Md.cell(Utils.defaultString(a.getEvidence())),
-                    reference
+                    reference,
+                    Md.cell(rowNotes)
             ));
         }
         return rows;
+    }
+
+    /** Headings for note types whose abbreviated names would read poorly when title-cased. */
+    private static final Map<String, String> NOTE_TYPE_LABELS = Map.of(
+            "strain_phys_biochem", "Physiology and Biochemistry",
+            "strain_drgs_chems", "Drugs and Chemicals",
+            "strain_life_disease", "Life Span and Disease",
+            "gene_mutations_overexpression", "Mutations and Overexpression",
+            "qtl_cand_genes", "Candidate Genes",
+            "qtl_trait_method", "Trait Method");
+
+    /**
+     * Curator Notes section: the object's public free-text notes, one sub-section per note type
+     * (e.g. "Expression", "Function", "Strain Characteristics"). These carry curated findings
+     * that appear nowhere else in the report.
+     *
+     * @param shownElsewhere note types the report already presents as fields (e.g. a QTL's
+     *                       {@code qtl_cross_type}), left out so they are not embedded twice
+     */
+    protected void appendCuratorNotes(StringBuilder md, int rgdId, Set<String> shownElsewhere) throws Exception {
+        LinkedHashMap<String, LinkedHashSet<String>> byType = new LinkedHashMap<>();
+        for (Note n : dao.getPublicNotes(rgdId)) {
+            String type = Utils.defaultString(n.getNotesTypeName()).trim().toLowerCase();
+            if (shownElsewhere.contains(type)) {
+                continue;
+            }
+            byType.computeIfAbsent(type, k -> new LinkedHashSet<>()).add(n.getNotes().trim());
+        }
+        if (byType.isEmpty()) {
+            return;
+        }
+        md.append(Md.heading(2, "Curator Notes"));
+        for (Map.Entry<String, LinkedHashSet<String>> e : byType.entrySet()) {
+            md.append(Md.heading(3, noteTypeLabel(e.getKey())));
+            for (String text : e.getValue()) {
+                md.append("- ").append(text.replace("\r", " ").replace("\n", " ")).append("\n");
+            }
+            md.append("\n");
+        }
+    }
+
+    /**
+     * Readable heading for a note type: the object-type prefix dropped and the rest title-cased
+     * ({@code gene_cellular_localization} -> "Cellular Localization").
+     */
+    static String noteTypeLabel(String type) {
+        String named = NOTE_TYPE_LABELS.get(type);
+        if (named != null) {
+            return named;
+        }
+        String t = type.replaceFirst("^(gene|qtl|strain|sslps)_", "");
+        if (t.isEmpty()) {
+            return "General";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String w : t.split("_")) {
+            if (w.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(Character.toUpperCase(w.charAt(0))).append(w.substring(1));
+        }
+        return sb.toString();
     }
 
     /**
@@ -431,13 +517,19 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
                 c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH));
     }
 
-    /** Four-digit publication year, or "" when the date is null. */
+    /**
+     * Four-digit publication year, or "" when the date is null or a placeholder: references with
+     * no known date are stored with the year 1000 (or 1 BC), which must not reach the reader.
+     */
     protected static String year(Date date) {
         if (date == null) {
             return "";
         }
         Calendar c = Calendar.getInstance();
         c.setTime(date);
+        if (c.get(Calendar.ERA) != java.util.GregorianCalendar.AD || c.get(Calendar.YEAR) < 1800) {
+            return "";
+        }
         return String.valueOf(c.get(Calendar.YEAR));
     }
 

@@ -14,6 +14,44 @@
         <constructor-arg ref="dao"/>
     </bean>
 
+    <!-- Allele genes are included in the gene run (gene type "allele"). -->
+
+    <!-- Cell lines, one species per run like genes. -->
+    <bean id="cellLineReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.CellLineReportGenerator">
+        <constructor-arg ref="dao"/>
+    </bean>
+
+    <!-- References with RGD-curated annotations; not species-scoped (written under reference/all). -->
+    <bean id="referenceReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.ReferenceReportGenerator">
+        <constructor-arg ref="dao"/>
+    </bean>
+
+    <!-- Pages of the RGD WordPress site (help, tutorials, tools, announcements); written under website/all. -->
+    <bean id="websitePageGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.WebsitePageGenerator">
+        <property name="apiUrl" value="https://rgd.mcw.edu/wg/wp-json/wp/v2/pages"/>
+        <!-- pages with less visible text than this are navigation or placeholders -->
+        <property name="minWords" value="100"/>
+        <!-- case-insensitive regexes matched against each page's slug and title -->
+        <property name="excludePatterns">
+            <list>
+                <value>calendar</value>
+                <value>paypal</value>
+                <value>\btest\b|_test_|-test-</value>
+                <value>lodging|housing|venue</value>
+            </list>
+        </property>
+    </bean>
+
+    <!-- Curated pathway diagram pages, keyed by PW accession; run with type "pathway". -->
+    <bean id="pathwayReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.PathwayReportGenerator">
+        <constructor-arg ref="dao"/>
+    </bean>
+
+    <!-- PhenoMiner expected ranges, one document per clinical measurement (CMO); run with type "expectedrange". -->
+    <bean id="expectedRangeReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.ExpectedRangeReportGenerator">
+        <constructor-arg ref="dao"/>
+    </bean>
+
     <!-- Accession-keyed (ontology-term) generator; run with type "ontology" (see Manager usage). -->
     <bean id="ontologyReportGenerator" class="edu.mcw.rgd.chatBotEmbed.generators.OntologyReportGenerator">
         <constructor-arg ref="dao"/>
@@ -89,13 +127,18 @@
                 <ref bean="geneReportGenerator"/>
                 <ref bean="qtlReportGenerator"/>
                 <ref bean="strainReportGenerator"/>
+                <ref bean="cellLineReportGenerator"/>
+                <ref bean="referenceReportGenerator"/>
+                <ref bean="websitePageGenerator"/>
             </list>
         </property>
 
         <!-- Accession-keyed generators (ontology terms), run on Manager's term path. -->
         <property name="termGenerators">
             <list>
-                <ref bean="ontologyReportGenerator"/>
+                <ref bean="ontologyReportGenerator"/>
+                <ref bean="pathwayReportGenerator"/>
+                <ref bean="expectedRangeReportGenerator"/>
             </list>
         </property>
 

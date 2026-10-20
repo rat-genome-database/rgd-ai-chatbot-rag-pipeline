@@ -14,6 +14,8 @@ import org.springframework.core.io.FileSystemResource;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -34,7 +36,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <pre>
  *   run.sh --mode generate --type gene [--species 3] [--mapKeys 380,372] [--limit N] [--rgdId N] [--outDir path]
  *   run.sh --mode generate --type ontology [--ontology MP | --ontAcc DOID:10763,DOID:2841] [--species 3] [--object gene] [--limit N] [--outDir path]
+ *   run.sh --mode generate --type cellline [--species 3] [--limit N] [--rgdId N]
+ *   run.sh --mode generate --type reference|website [--limit N] [--rgdId N]   (not species-scoped: written under &lt;type&gt;/all)
+ *   run.sh --mode generate --type pathway|expectedrange [--ontAcc PW:0000559] [--limit N]
  *   run.sh --mode embed --path obo [--ontology DOID] [--force]
+ *
+ *   A generate run over every object of a type (no --rgdId/--ontAcc/--limit/--ontology) also
+ *   deletes that type's files it did not write; it refuses when that is over 10% of them, unless
+ *   --forcePrune is given.
  *   run.sh --mode embed [--index qwen] [--path gene] [--species 3] [--rgdId N,N] [--force] [--outDir path]
  *   run.sh --mode refresh-objects [--path strain] [--species 3] [--rgdId N,N] [--outDir path]
  * </pre>
@@ -95,6 +104,7 @@ public class Manager {
         String path = null;
         String index = null;
         boolean force = false;
+        boolean forcePrune = false;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -111,6 +121,7 @@ public class Manager {
                 case "--limit":    limit = Integer.parseInt(args[++i]); break;
                 case "--path":     path = args[++i]; break;
                 case "--force":    force = true; break;
+                case "--forcePrune": forcePrune = true; break;
                 case "--index":    index = args[++i]; break;
                 case "--outDir":   outputDir = args[++i]; break;
                 default: throw new IllegalArgumentException("unknown argument: " + args[i]);
@@ -165,14 +176,14 @@ public class Manager {
         if (termGenerator != null) {
             int speciesFilter = speciesProvided ? speciesTypeKey : 0;   // 0 = all species
             int objectFilter = parseObjectKey(objectArg);               // 0 = all object types
-            runGenerateTerms(termGenerator, ontologyArg, ontAccArg, speciesFilter, objectFilter, limit);
+            runGenerateTerms(termGenerator, ontologyArg, ontAccArg, speciesFilter, objectFilter, limit, forcePrune);
         } else {
-            runGenerate(type, speciesTypeKey, mapKeysArg, rgdIdArg, limit);
+            runGenerate(type, speciesTypeKey, mapKeysArg, rgdIdArg, limit, forcePrune);
         }
     }
 
     private void runGenerate(String type, int speciesTypeKey, String mapKeysArg,
-                             List<Integer> rgdIdArg, int limit) throws Exception {
+                             List<Integer> rgdIdArg, int limit, boolean forcePrune) throws Exception {
         if (Utils.isStringEmpty(type)) {
             throw new IllegalArgumentException("--type is required in generate mode (e.g. --type gene)");
         }
@@ -186,7 +197,10 @@ public class Manager {
 
         // Per-species sub-directory (e.g. "rat"): reports are generated one species per run
         // (getRgdIds is species-scoped), so every file in this run lands under the same species.
-        String speciesDir = MarkdownWriter.safeSymbol(SpeciesType.getCommonName(speciesTypeKey)).toLowerCase();
+        // Types that are not species-specific (references, website pages) go under "all".
+        String speciesDir = generator.isSpeciesScoped()
+                ? MarkdownWriter.safeSymbol(SpeciesType.getCommonName(speciesTypeKey)).toLowerCase()
+                : "all";
 
         List<Integer> rgdIds;
         if (!rgdIdArg.isEmpty()) {
@@ -204,6 +218,8 @@ public class Manager {
         AtomicInteger written = new AtomicInteger();
         AtomicInteger skipped = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
+        Set<String> failedIds = ConcurrentHashMap.newKeySet();
+        boolean completeRun = rgdIdArg.isEmpty() && limit <= 0;
 
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
         List<Future<?>> futures = new ArrayList<>(rgdIds.size());
@@ -223,6 +239,7 @@ public class Manager {
                     }
                 } catch (Exception e) {
                     failed.incrementAndGet();
+                    failedIds.add(String.valueOf(id));
                     log.error("Failed to generate rgdId={}: {}", id, e.getMessage());
                 }
             }));
@@ -233,7 +250,16 @@ public class Manager {
         pool.shutdown();
         pool.awaitTermination(6, TimeUnit.HOURS);
 
-        String summary = String.format("Done. written=%d skipped=%d failed=%d", written.get(), skipped.get(), failed.get());
+        // A run over every object of the species also removes the reports it no longer produces
+        // (withdrawn objects), so the embed step does not keep re-reading them.
+        int pruned = 0;
+        if (completeRun) {
+            pruned = writer.prune(generator.getReportType(),
+                    List.of(writer.typeDir(generator.getReportType()).resolve(speciesDir)), false, failedIds, forcePrune);
+        }
+
+        String summary = String.format("Done. written=%d skipped=%d failed=%d pruned=%d",
+                written.get(), skipped.get(), failed.get(), pruned);
         log.info(summary);
         System.out.println(summary);
     }
@@ -245,7 +271,7 @@ public class Manager {
      */
     private void runGenerateTerms(TermReportGenerator generator, String ontologyFilter,
                                   List<String> explicitAccessions, int speciesFilter, int objectFilter,
-                                  int limit) throws Exception {
+                                  int limit, boolean forcePrune) throws Exception {
         DAO dao = new DAO();
         log.info("Connected to: {}", dao.getConnectionInfo());
         MarkdownWriter writer = new MarkdownWriter(outputDir);
@@ -271,6 +297,8 @@ public class Manager {
         AtomicInteger written = new AtomicInteger();
         AtomicInteger skipped = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
+        Set<String> failedIds = ConcurrentHashMap.newKeySet();
+        boolean completeRun = explicitAccessions.isEmpty() && limit <= 0 && Utils.isStringEmpty(ontologyFilter);
 
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
         List<Future<?>> futures = new ArrayList<>(accessions.size());
@@ -290,6 +318,7 @@ public class Manager {
                     }
                 } catch (Exception e) {
                     failed.incrementAndGet();
+                    failedIds.add(MarkdownWriter.safeSymbol(acc));
                     log.error("Failed to generate term={}: {}", acc, e.getMessage());
                 }
             }));
@@ -300,7 +329,16 @@ public class Manager {
         pool.shutdown();
         pool.awaitTermination(6, TimeUnit.HOURS);
 
-        String summary = String.format("Done. written=%d skipped=%d failed=%d", written.get(), skipped.get(), failed.get());
+        // Only a run over every accession can tell which reports are obsolete. Every sub-directory
+        // of the type is pruned, but only <type>_*.md files: the OBO files under ontology/obo stay.
+        int pruned = 0;
+        if (completeRun) {
+            pruned = writer.prune(generator.getReportType(),
+                    List.of(writer.typeDir(generator.getReportType())), true, failedIds, forcePrune);
+        }
+
+        String summary = String.format("Done. written=%d skipped=%d failed=%d pruned=%d",
+                written.get(), skipped.get(), failed.get(), pruned);
         log.info(summary);
         System.out.println(summary);
     }

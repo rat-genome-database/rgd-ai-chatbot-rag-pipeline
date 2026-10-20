@@ -17,6 +17,15 @@ public interface ReportGenerator {
     /** Report type directory name and file-name prefix, e.g. {@code "gene"}. */
     String getReportType();
 
+    /**
+     * Whether reports of this type belong to one species. Species-scoped reports are written
+     * under the run's species directory (e.g. {@code gene/rat/}); the others, such as references,
+     * under {@code <type>/all/}, whichever species the run names.
+     */
+    default boolean isSpeciesScoped() {
+        return true;
+    }
+
     /** All RGD IDs to generate reports for, for the given species. */
     List<Integer> getRgdIds(int speciesTypeKey) throws Exception;
 

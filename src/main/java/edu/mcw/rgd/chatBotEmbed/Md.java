@@ -38,6 +38,34 @@ public final class Md {
         return s.replace("\r", " ").replace("\n", " ").replace("|", "\\|").trim();
     }
 
+    /**
+     * Curated free text as plain markdown paragraphs: any HTML markup is dropped (keeping its
+     * text), hard-wrapped lines are re-joined, and blank lines between paragraphs are kept.
+     */
+    public static String plainText(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        String s = text.replace("\r\n", "\n").replace('\r', '\n');
+        if (s.indexOf('<') >= 0) {
+            org.jsoup.nodes.Document doc = org.jsoup.Jsoup.parseBodyFragment(s);
+            doc.select("br").after("\n");
+            doc.select("p, div, li, h1, h2, h3, h4, h5, h6, tr").after("\n\n");
+            s = doc.body().wholeText();
+        }
+        StringBuilder out = new StringBuilder();
+        for (String para : s.split("\n\\s*\n")) {
+            String joined = para.replaceAll("\\s+", " ").trim();
+            if (!joined.isEmpty()) {
+                if (out.length() > 0) {
+                    out.append("\n\n");
+                }
+                out.append(joined);
+            }
+        }
+        return out.toString();
+    }
+
     /** A markdown link with the display text escaped for table-cell safety. */
     public static String link(String text, String url) {
         return "[" + cell(text) + "](" + url + ")";

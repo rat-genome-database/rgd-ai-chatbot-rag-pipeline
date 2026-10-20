@@ -454,6 +454,19 @@ public class EmbedService {
             sections.add(ReportMetadata.sectionOf(c));
         }
 
+        // A report whose display name changed (renamed symbol, different markup in a strain
+        // symbol) leaves its old rows behind under the old name, and both versions get retrieved.
+        // The object's RGD ID ties them together: keep only the rows under the current name.
+        // Checked on every run, unchanged files included, so existing leftovers clear on the next
+        // embed; with no leftovers it is one indexed lookup.
+        if (objectRgdId != null) {
+            int stale = dao.deleteChunksUnderOtherFileNames(objectRgdId, displayName);
+            if (stale > 0) {
+                LOG.info("Removed {} chunk(s) of RGD:{} stored under an earlier report name (now '{}')",
+                        stale, objectRgdId, displayName);
+            }
+        }
+
         // Change detection: without --force, re-embed only if this file's chunks differ from the
         // chunks already stored for it. getChunksByFileName returns them in insert order (ORDER BY
         // id), which is the order we wrote them, so an order-sensitive list equality is exact.

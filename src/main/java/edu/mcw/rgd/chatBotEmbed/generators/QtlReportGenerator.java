@@ -60,6 +60,10 @@ public class QtlReportGenerator extends AbstractReportGenerator {
         ONTOLOGY_SECTIONS.put("MP",  "Mammalian Phenotype Annotations");
     }
 
+    /** Note types the Summary already shows as fields, so Curator Notes leaves them out. */
+    private static final java.util.Set<String> NOTES_SHOWN_IN_SUMMARY = java.util.Set.of(
+            "qtl_trait", "qtl_subtrait", "qtl_statistics", "qtl_cross_type", "qtl_population");
+
     /** mapKey -> assembly, cached across QTLs/threads to avoid repeat lookups. */
     private final java.util.Map<Integer, Map> assemblyCache = new ConcurrentHashMap<>();
 
@@ -117,6 +121,8 @@ public class QtlReportGenerator extends AbstractReportGenerator {
         appendSummary(md, qtl, rgdId);
         appendPositions(md, qtl, assemblies);
         appendAnnotations(md, rgdId, ONTOLOGY_SECTIONS);
+        appendCuratorNotes(md, rgdId, NOTES_SHOWN_IN_SUMMARY);
+        appendCandidateGenes(md, rgdId);
         appendReferences(md, rgdId);
         appendRelatedQtls(md, qtl);
         appendGenesInRegion(md, qtl);
@@ -171,6 +177,31 @@ public class QtlReportGenerator extends AbstractReportGenerator {
         }
 
         md.append("\n");
+    }
+
+    /**
+     * Candidate Genes section: genes curators have named as possibly underlying this QTL (the
+     * report page's "Candidate Gene Status"). Distinct from Genes in Region, which only overlap it.
+     */
+    private void appendCandidateGenes(StringBuilder md, int rgdId) throws Exception {
+        List<edu.mcw.rgd.datamodel.Gene> genes = dao.getCandidateGenesForQtl(rgdId);
+        if (genes == null || genes.isEmpty()) {
+            return;
+        }
+        LinkedHashMap<Integer, edu.mcw.rgd.datamodel.Gene> unique = new LinkedHashMap<>();
+        for (edu.mcw.rgd.datamodel.Gene g : genes) {
+            unique.putIfAbsent(g.getRgdId(), g);
+        }
+        List<List<String>> rows = new ArrayList<>();
+        for (edu.mcw.rgd.datamodel.Gene g : unique.values()) {
+            rows.add(List.of(
+                    Md.link(Utils.defaultString(g.getSymbol()), GENE_REPORT_URL + g.getRgdId()),
+                    Md.cell(Utils.defaultString(g.getName()))
+            ));
+        }
+        md.append(Md.heading(2, "Candidate Genes"));
+        md.append("*Genes curated as candidate genes for this QTL.*\n\n");
+        md.append(Md.table(List.of("Symbol", "Name"), rows));
     }
 
     /** Emit "- **Label:** value" when the value is non-blank; skip the field entirely otherwise. */
