@@ -9,9 +9,14 @@
 # black rat 17. A type a species has no objects of simply writes nothing.
 # Cell lines for human (~124K) and mouse (~30K) are mostly Cellosaurus imports; choose at
 # embed time whether to include them (embedCellLineMD.sh --species <key>).
+#
+# Human QTLs are skipped: they are ~913K GWAS associations, which would take days to generate,
+# dominate embedding cost and crowd retrieval. GWAS questions belong to a structured lookup.
 for SPECIES in 3 1 2 4 5 6 7 9 13 14 17; do
     ./run.sh --mode generate --type gene --species $SPECIES
-    ./run.sh --mode generate --type qtl --species $SPECIES
+    if [ "$SPECIES" != "1" ]; then
+        ./run.sh --mode generate --type qtl --species $SPECIES
+    fi
     ./run.sh --mode generate --type strain --species $SPECIES
     ./run.sh --mode generate --type cellline --species $SPECIES
 done
