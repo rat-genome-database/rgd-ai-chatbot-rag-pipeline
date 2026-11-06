@@ -11,7 +11,6 @@ import edu.mcw.rgd.process.Utils;
 import java.math.RoundingMode;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -56,8 +55,8 @@ public class ExpectedRangeReportGenerator implements TermReportGenerator {
         PhenominerExpectedRange first = ranges.get(0);
         String measurement = firstNonEmpty(first.getClinicalMeasurement(), accId);
 
-        LinkedHashSet<String> traits = new LinkedHashSet<>();
-        LinkedHashSet<String> units = new LinkedHashSet<>();
+        java.util.TreeSet<String> traits = new java.util.TreeSet<>(AbstractReportGenerator.TEXT);
+        java.util.TreeSet<String> units = new java.util.TreeSet<>(AbstractReportGenerator.TEXT);
         for (PhenominerExpectedRange r : ranges) {
             if (!Utils.isStringEmpty(r.getTrait())) traits.add(r.getTrait().trim());
             if (!Utils.isStringEmpty(r.getUnits())) units.add(r.getUnits().trim());
@@ -84,8 +83,17 @@ public class ExpectedRangeReportGenerator implements TermReportGenerator {
                 + "for each strain group, sex and age span, the expected mean value with its standard "
                 + "deviation and the range in which values are expected to fall.*\n\n");
 
+        // Grouped by strain, then sex and age; ranges differing only in method (e.g. "_tail") are
+        // ordered by name and id, which the query's ORDER BY leaves open.
+        List<PhenominerExpectedRange> sorted = new ArrayList<>(ranges);
+        sorted.sort(java.util.Comparator.comparingInt(PhenominerExpectedRange::getStrainGroupId)
+                .thenComparing(r -> Utils.defaultString(r.getSex()), AbstractReportGenerator.TEXT)
+                .thenComparingInt(PhenominerExpectedRange::getAgeLowBound)
+                .thenComparingInt(PhenominerExpectedRange::getAgeHighBound)
+                .thenComparing(r -> Utils.defaultString(r.getExpectedRangeName()), AbstractReportGenerator.TEXT)
+                .thenComparingInt(PhenominerExpectedRange::getExpectedRangeId));
         List<List<String>> rows = new ArrayList<>();
-        for (PhenominerExpectedRange r : ranges) {
+        for (PhenominerExpectedRange r : sorted) {
             String group = firstNonEmpty(r.getStrainGroupName(), dao.getStrainGroupName(r.getStrainGroupId()));
             rows.add(List.of(
                     Md.cell(group),

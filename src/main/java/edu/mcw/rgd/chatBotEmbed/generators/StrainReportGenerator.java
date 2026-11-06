@@ -204,8 +204,11 @@ public class StrainReportGenerator extends AbstractReportGenerator {
 
     /** Comma-separated list of a strain's substrains, each a link to its strain report. */
     private String substrainList(String symbol) throws Exception {
+        List<Strain> subs = new ArrayList<>(dao.getSubStrains(symbol));
+        subs.sort(java.util.Comparator.comparing((Strain s) -> Utils.defaultString(s.getSymbol()), TEXT)
+                .thenComparingInt(Strain::getRgdId));
         List<String> links = new ArrayList<>();
-        for (Strain s : dao.getSubStrains(symbol)) {
+        for (Strain s : subs) {
             links.add(Md.link(Utils.defaultString(s.getSymbol()), STRAIN_REPORT_URL + s.getRgdId()));
         }
         return String.join(", ", links);
@@ -228,6 +231,7 @@ public class StrainReportGenerator extends AbstractReportGenerator {
                     : ONTOLOGY_VIEW_URL + term.getAccId();
             links.add(Md.link(Utils.defaultString(term.getTerm()), url));
         }
+        links.sort(TEXT);
         return String.join(", ", links);
     }
 
@@ -308,7 +312,7 @@ public class StrainReportGenerator extends AbstractReportGenerator {
             String name = (term != null && !Utils.isStringEmpty(term.getTerm())) ? term.getTerm() : acc;
             items.add(Md.link(name + " (" + acc + ")", ONTOLOGY_TERM_URL + acc));
         }
-        items.sort(String.CASE_INSENSITIVE_ORDER);
+        items.sort(TEXT);
         return String.join(", ", items);
     }
 
@@ -336,7 +340,9 @@ public class StrainReportGenerator extends AbstractReportGenerator {
         if (cellLines == null || cellLines.isEmpty()) {
             return;
         }
-        cellLines.sort((a, b) -> Utils.defaultString(a.getSymbol()).compareToIgnoreCase(Utils.defaultString(b.getSymbol())));
+        cellLines = new ArrayList<>(cellLines);
+        cellLines.sort(java.util.Comparator.comparing((GenomicElement ge) -> Utils.defaultString(ge.getSymbol()), TEXT)
+                .thenComparingInt(GenomicElement::getRgdId));
         List<String> links = new ArrayList<>();
         for (GenomicElement ge : cellLines) {
             links.add(Md.link(Utils.defaultString(ge.getSymbol()), CELLLINE_REPORT_URL + ge.getRgdId()));
@@ -372,6 +378,7 @@ public class StrainReportGenerator extends AbstractReportGenerator {
         if (rows.isEmpty()) {
             return;
         }
+        sortRows(rows);
         md.append(Md.heading(3, "Position Markers"));
         md.append(Md.table(List.of("Type", "Region", "Marker", "RGD ID"), rows));
     }
@@ -379,14 +386,16 @@ public class StrainReportGenerator extends AbstractReportGenerator {
     /**
      * Strain QTL Data sub-section: QTLs associated with the strain, sorted by symbol. Trait is the
      * QTL's Vertebrate Trait annotation (with the {@code qtl_trait} note fallback), the same
-     * derivation the QTL report and gene "QTLs in Region" use.
+     * derivation the QTL report uses.
      */
     private void appendStrainQtlData(StringBuilder md, Strain strain) throws Exception {
         List<QTL> qtls = dao.getQtlAssociationsForStrain(strain.getRgdId());
         if (qtls == null || qtls.isEmpty()) {
             return;
         }
-        qtls.sort((a, b) -> Utils.defaultString(a.getSymbol()).compareToIgnoreCase(Utils.defaultString(b.getSymbol())));
+        qtls = new ArrayList<>(qtls);
+        qtls.sort(java.util.Comparator.comparing((QTL q) -> Utils.defaultString(q.getSymbol()), TEXT)
+                .thenComparingInt(QTL::getRgdId));
         List<List<String>> rows = new ArrayList<>();
         for (QTL qtl : qtls) {
             rows.add(List.of(
@@ -422,6 +431,7 @@ public class StrainReportGenerator extends AbstractReportGenerator {
         if (rows.isEmpty()) {
             return;
         }
+        sortRows(rows);
         md.append(Md.heading(3, "Strain Samples with Damaging Variants (PolyPhen)"));
         md.append(Md.table(List.of("Assembly", "Sample"), rows));
     }
@@ -457,9 +467,15 @@ public class StrainReportGenerator extends AbstractReportGenerator {
      * {@code RRID:RGD_<rgdId>}.
      */
     private String citationId(int rgdId) throws Exception {
-        List<XdbId> rrrc = dao.getXdbIdsByKey(XDB_KEY_RRRC, rgdId);
-        if (rrrc != null && !rrrc.isEmpty() && !Utils.isStringEmpty(rrrc.get(0).getAccId())) {
-            String acc = rrrc.get(0).getAccId().trim();
+        List<String> accs = new ArrayList<>();
+        for (XdbId x : dao.getXdbIdsByKey(XDB_KEY_RRRC, rgdId)) {
+            if (!Utils.isStringEmpty(x.getAccId())) {
+                accs.add(x.getAccId().trim());
+            }
+        }
+        if (!accs.isEmpty()) {
+            accs.sort(TEXT);   // a strain with several RRRC accessions cites the same one every run
+            String acc = accs.get(0);
             return acc.length() == 4 ? "RRID:RRRC_0" + acc : "RRID:RRRC_" + acc;
         }
         return "RRID:RGD_" + rgdId;
@@ -499,6 +515,6 @@ public class StrainReportGenerator extends AbstractReportGenerator {
         if (!Utils.isStringEmpty(tagless) && !tagless.trim().equalsIgnoreCase(Utils.defaultString(strain.getSymbol()))) {
             values.add(tagless.trim());
         }
-        return String.join("; ", values);
+        return sortedJoin(values, "; ");
     }
 }

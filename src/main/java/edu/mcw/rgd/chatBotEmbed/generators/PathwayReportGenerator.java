@@ -69,7 +69,7 @@ public class PathwayReportGenerator implements TermReportGenerator {
         md.append("- **Pathway:** ").append(name).append("\n");
         md.append("- **Pathway Ontology ID:** ").append(Md.link(accId, ONTOLOGY_TERM_URL + accId)).append("\n");
         if (p.getPathwayCategories() != null && !p.getPathwayCategories().isEmpty()) {
-            md.append("- **Categories:** ").append(String.join(", ", p.getPathwayCategories())).append("\n");
+            md.append("- **Categories:** ").append(AbstractReportGenerator.sortedJoin(p.getPathwayCategories(), ", ")).append("\n");
         }
         if ("Y".equalsIgnoreCase(p.getHasAlteredPath())) {
             md.append("- **Has Altered Pathway:** yes\n");
@@ -112,6 +112,7 @@ public class PathwayReportGenerator implements TermReportGenerator {
                     Md.cell(Md.plainText(o.getObjDesc()))
             ));
         }
+        rows.sort(AbstractReportGenerator.ROW_ORDER);   // the pathway queries have no ORDER BY
         md.append(Md.heading(2, "Pathway Objects"));
         md.append("*Additional elements shown in the pathway diagram.*\n\n");
         md.append(Md.table(List.of("Name", "Type", "Accession", "Description"), rows));
@@ -129,6 +130,7 @@ public class PathwayReportGenerator implements TermReportGenerator {
                     Md.cell(Utils.defaultString(r.getCitation()))
             ));
         }
+        rows.sort(AbstractReportGenerator.ROW_ORDER);
         md.append(Md.heading(2, "References"));
         md.append(Md.table(List.of("Title", "Citation"), rows));
     }

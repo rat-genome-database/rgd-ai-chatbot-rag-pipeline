@@ -1,7 +1,6 @@
 package edu.mcw.rgd.chatBotEmbed.generators;
 
 import edu.mcw.rgd.chatBotEmbed.DAO;
-import edu.mcw.rgd.chatBotEmbed.MarkdownWriter;
 import edu.mcw.rgd.chatBotEmbed.Md;
 import edu.mcw.rgd.chatBotEmbed.ReportDoc;
 import edu.mcw.rgd.datamodel.Author;
@@ -13,8 +12,6 @@ import edu.mcw.rgd.datamodel.ontology.Annotation;
 import edu.mcw.rgd.process.Utils;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 
 /**
@@ -140,7 +137,8 @@ public class ReferenceReportGenerator extends AbstractReportGenerator {
      * the paper supports for it. Imported annotations that merely cite the paper are left out.
      */
     private void appendAnnotatedObjects(StringBuilder md, int refRgdId) throws Exception {
-        LinkedHashMap<Integer, AnnotatedObject> byObject = new LinkedHashMap<>();
+        // Objects by symbol, then RGD ID; each object's terms sorted (see AnnotatedObject.terms).
+        java.util.TreeMap<Integer, AnnotatedObject> byObject = new java.util.TreeMap<>();
         for (Annotation a : dao.getAnnotationsByReference(refRgdId)) {
             if (!"RGD".equalsIgnoreCase(a.getDataSrc()) || a.getAnnotatedObjectRgdId() == null) {
                 continue;
@@ -156,8 +154,11 @@ public class ReferenceReportGenerator extends AbstractReportGenerator {
             return;
         }
 
+        List<AnnotatedObject> objects = new ArrayList<>(byObject.values());
+        objects.sort(java.util.Comparator.comparing((AnnotatedObject o) -> o.symbol, TEXT)
+                .thenComparingInt(o -> o.rgdId));
         List<List<String>> rows = new ArrayList<>();
-        for (AnnotatedObject o : byObject.values()) {
+        for (AnnotatedObject o : objects) {
             if (rows.size() == MAX_OBJECTS) {
                 break;
             }
@@ -216,7 +217,7 @@ public class ReferenceReportGenerator extends AbstractReportGenerator {
         final int objectKey;
         final int speciesTypeKey;
         final String symbol;
-        final LinkedHashSet<String> terms = new LinkedHashSet<>();
+        final java.util.TreeSet<String> terms = new java.util.TreeSet<>(TEXT);
         AnnotatedObject(Annotation a) {
             this.rgdId = a.getAnnotatedObjectRgdId();
             this.objectKey = a.getRgdObjectKey() == null ? 0 : a.getRgdObjectKey();

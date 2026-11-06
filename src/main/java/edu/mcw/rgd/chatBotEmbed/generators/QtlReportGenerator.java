@@ -41,7 +41,6 @@ public class QtlReportGenerator extends AbstractReportGenerator {
 
     private static final String STRAIN_REPORT_URL = "https://rgd.mcw.edu/rgdweb/report/strain/main.html?id=";
     private static final String GENE_REPORT_URL = "https://rgd.mcw.edu/rgdweb/report/gene/main.html?id=";
-    private static final String MARKER_REPORT_URL = "https://rgd.mcw.edu/rgdweb/report/marker/main.html?id=";
     private static final String RSID_REPORT_URL = "https://rgd.mcw.edu/rgdweb/report/rsId/main.html?id=";
     private static final String GWAS_STUDY_URL = "https://www.ebi.ac.uk/gwas/studies/";
 
@@ -125,10 +124,7 @@ public class QtlReportGenerator extends AbstractReportGenerator {
         appendCandidateGenes(md, rgdId);
         appendReferences(md, rgdId);
         appendRelatedQtls(md, qtl);
-        appendGenesInRegion(md, qtl);
-        appendMarkersInRegion(md, qtl);
         appendPositionMarkers(md, qtl);
-        appendQtlsInRegion(md, rgdId, qtl.getSpeciesTypeKey());
         appendGwasQtlInfo(md, qtl);
         appendExternalDbLinks(md, rgdId, qtl.getSpeciesTypeKey());
         appendNomenclatureHistory(md, rgdId);
@@ -181,7 +177,8 @@ public class QtlReportGenerator extends AbstractReportGenerator {
 
     /**
      * Candidate Genes section: genes curators have named as possibly underlying this QTL (the
-     * report page's "Candidate Gene Status"). Distinct from Genes in Region, which only overlap it.
+     * report page's "Candidate Gene Status"). Region overlap is answered from
+     * coordinates by the chatbot's region lookup, not listed in reports.
      */
     private void appendCandidateGenes(StringBuilder md, int rgdId) throws Exception {
         List<edu.mcw.rgd.datamodel.Gene> genes = dao.getCandidateGenesForQtl(rgdId);
@@ -192,8 +189,11 @@ public class QtlReportGenerator extends AbstractReportGenerator {
         for (edu.mcw.rgd.datamodel.Gene g : genes) {
             unique.putIfAbsent(g.getRgdId(), g);
         }
+        List<edu.mcw.rgd.datamodel.Gene> sorted = new ArrayList<>(unique.values());
+        sorted.sort(Comparator.comparing((edu.mcw.rgd.datamodel.Gene g) -> Utils.defaultString(g.getSymbol()), TEXT)
+                .thenComparingInt(edu.mcw.rgd.datamodel.Gene::getRgdId));
         List<List<String>> rows = new ArrayList<>();
-        for (edu.mcw.rgd.datamodel.Gene g : unique.values()) {
+        for (edu.mcw.rgd.datamodel.Gene g : sorted) {
             rows.add(List.of(
                     Md.link(Utils.defaultString(g.getSymbol()), GENE_REPORT_URL + g.getRgdId()),
                     Md.cell(Utils.defaultString(g.getName()))
@@ -223,7 +223,7 @@ public class QtlReportGenerator extends AbstractReportGenerator {
                 values.add(a.getValue().trim());
             }
         }
-        return String.join("; ", values);
+        return sortedJoin(values, "; ");
     }
 
     /** The strains crossed to map this QTL, as links to their strain reports. */
@@ -232,7 +232,9 @@ public class QtlReportGenerator extends AbstractReportGenerator {
         if (strains == null || strains.isEmpty()) {
             return "";
         }
-        strains.sort(Comparator.comparing(s -> Utils.defaultString(s.getSymbol()).toLowerCase()));
+        strains = new ArrayList<>(strains);
+        strains.sort(Comparator.comparing((Strain s) -> Utils.defaultString(s.getSymbol()), TEXT)
+                .thenComparingInt(Strain::getRgdId));
         List<String> links = new ArrayList<>(strains.size());
         for (Strain s : strains) {
             links.add(Md.link(Utils.defaultString(s.getSymbol()), STRAIN_REPORT_URL + s.getRgdId()));
@@ -251,7 +253,9 @@ public class QtlReportGenerator extends AbstractReportGenerator {
 
         if (assemblies != null && !assemblies.isEmpty()) {
             for (Map assembly : assemblies) {
-                for (MapData d : dao.getMapData(rgdId, assembly.getKey())) {
+                List<MapData> data = new ArrayList<>(dao.getMapData(rgdId, assembly.getKey()));
+                data.sort(MAP_DATA_ORDER);
+                for (MapData d : data) {
                     rows.add(positionRow(assembly.getName(), d));
                 }
             }
@@ -266,7 +270,8 @@ public class QtlReportGenerator extends AbstractReportGenerator {
                 placements.add(new Placement(assembly, d));
             }
             placements.sort(Comparator.<Placement>comparingInt(p -> p.assembly.getRank())
-                    .thenComparing(p -> Utils.defaultString(p.assembly.getName())));
+                    .thenComparing(p -> Utils.defaultString(p.assembly.getName()))
+                    .thenComparing(Placement::data, MAP_DATA_ORDER));
             for (Placement p : placements) {
                 rows.add(positionRow(p.assembly.getName(), p.data));
             }
@@ -328,109 +333,11 @@ public class QtlReportGenerator extends AbstractReportGenerator {
             ));
         }
 
-        // Stable, human-friendly order: by related QTL symbol.
-        rows.sort(Comparator.comparing(r -> r.get(0).toLowerCase()));
+        // Stable, human-friendly order: by related QTL symbol, then the rest of the row.
+        sortRows(rows);
 
         md.append(Md.heading(2, "Related QTLs"));
         md.append(Md.table(List.of("Related QTL", "Description", "Reference"), rows));
-    }
-
-    /**
-     * Genes in Region section: the genes whose position on the QTL's primary reference assembly
-     * (e.g. GRCr8 for rat) overlaps the QTL's region there. The QTL may be placed more than once
-     * on that assembly; genes are merged across placements and deduplicated by gene RGD ID.
-     *
-     * <p>Only identity is reported — RGD ID, symbol, name — deliberately not each gene's own
-     * position, which belongs on the gene's own report and only bloats this list.</p>
-     */
-    private void appendGenesInRegion(StringBuilder md, QTL qtl) throws Exception {
-        Map primary = dao.getPrimaryRefAssembly(qtl.getSpeciesTypeKey());
-        if (primary == null) {
-            return;
-        }
-        List<MapData> placements = dao.getMapData(qtl.getRgdId(), primary.getKey());
-        if (placements == null || placements.isEmpty()) {
-            return;
-        }
-
-        // Merge genes across every placement of the QTL, keeping one row per gene RGD ID.
-        java.util.LinkedHashMap<Integer, edu.mcw.rgd.datamodel.Gene> unique = new java.util.LinkedHashMap<>();
-        for (MapData d : placements) {
-            if (d.getChromosome() == null || d.getStartPos() == null || d.getStopPos() == null) {
-                continue;
-            }
-            for (edu.mcw.rgd.datamodel.Gene g : dao.getGenesInRegion(
-                    d.getChromosome(), d.getStartPos(), d.getStopPos(), primary.getKey())) {
-                unique.putIfAbsent(g.getRgdId(), g);
-            }
-        }
-        if (unique.isEmpty()) {
-            return;
-        }
-
-        List<edu.mcw.rgd.datamodel.Gene> genes = new ArrayList<>(unique.values());
-        genes.sort(Comparator.comparing(g -> Utils.defaultString(g.getSymbol()).toLowerCase()));
-
-        List<List<String>> rows = new ArrayList<>();
-        for (edu.mcw.rgd.datamodel.Gene g : genes) {
-            rows.add(List.of(
-                    Md.link("RGD:" + g.getRgdId(), GENE_REPORT_URL + g.getRgdId()),
-                    Md.cell(Utils.defaultString(g.getSymbol())),
-                    Md.cell(Utils.defaultString(g.getName()))
-            ));
-        }
-
-        md.append(Md.heading(2, "Genes in Region (" + primary.getName() + ")"));
-        md.append("*Genes whose position on " + primary.getName()
-                + " overlaps this QTL's region.*\n\n");
-        md.append(Md.table(List.of("RGD ID", "Symbol", "Name"), rows));
-    }
-
-    /**
-     * Markers in Region section: the markers (SSLPs) whose position on the QTL's primary
-     * reference assembly overlaps the QTL's region there, merged across the QTL's placements and
-     * deduplicated by marker RGD ID. Only the marker's name and RGD ID are reported — the
-     * marker's own position is intentionally omitted.
-     */
-    private void appendMarkersInRegion(StringBuilder md, QTL qtl) throws Exception {
-        Map primary = dao.getPrimaryRefAssembly(qtl.getSpeciesTypeKey());
-        if (primary == null) {
-            return;
-        }
-        List<MapData> placements = dao.getMapData(qtl.getRgdId(), primary.getKey());
-        if (placements == null || placements.isEmpty()) {
-            return;
-        }
-
-        java.util.LinkedHashMap<Integer, edu.mcw.rgd.datamodel.SSLP> unique = new java.util.LinkedHashMap<>();
-        for (MapData d : placements) {
-            if (d.getChromosome() == null || d.getStartPos() == null || d.getStopPos() == null) {
-                continue;
-            }
-            for (edu.mcw.rgd.datamodel.SSLP s : dao.getMarkersInRegion(
-                    d.getChromosome(), d.getStartPos(), d.getStopPos(), primary.getKey())) {
-                unique.putIfAbsent(s.getRgdId(), s);
-            }
-        }
-        if (unique.isEmpty()) {
-            return;
-        }
-
-        List<edu.mcw.rgd.datamodel.SSLP> markers = new ArrayList<>(unique.values());
-        markers.sort(Comparator.comparing(s -> Utils.defaultString(s.getName()).toLowerCase()));
-
-        List<List<String>> rows = new ArrayList<>();
-        for (edu.mcw.rgd.datamodel.SSLP s : markers) {
-            rows.add(List.of(
-                    Md.link("RGD:" + s.getRgdId(), MARKER_REPORT_URL + s.getRgdId()),
-                    Md.cell(Utils.defaultString(s.getName()))
-            ));
-        }
-
-        md.append(Md.heading(2, "Markers in Region (" + primary.getName() + ")"));
-        md.append("*Markers whose position on " + primary.getName()
-                + " overlaps this QTL's region.*\n\n");
-        md.append(Md.table(List.of("RGD ID", "Name"), rows));
     }
 
     /**
@@ -520,6 +427,7 @@ public class QtlReportGenerator extends AbstractReportGenerator {
             ));
         }
 
+        sortRows(rows);
         md.append(Md.heading(2, "GWAS QTLs Related by Peak Marker"));
         md.append(Md.table(List.of(
                 "QTL", "GWAS Catalog Study", "Disease Trait", "Study Size", "Risk Allele",

@@ -85,6 +85,19 @@
         <!-- "-mode embed -path obo": directory of *.obo files, produced by a separate
              pipeline. Term reports are built in memory and embedded; nothing is written here. -->
         <property name="oboDir" value="data/markdown/ontology/obo"/>
+
+        <!-- "-mode batch-embed": vectors bought through the OpenAI Batch API (asynchronous, within
+             24 hours, discounted). Queued batches are recorded in batchDir so an interrupted run
+             resumes them instead of paying again. Set batchMaxQueuedTokens to the batch queue
+             limit for text-embedding-3-large shown at
+             https://platform.openai.com/settings/organization/limits (0 = not enforced here;
+             OpenAI then rejects a batch that does not fit, and it is retried later). -->
+        <property name="batchDir" value="data/batch"/>
+        <property name="batchMaxInputs" value="50000"/>          <!-- OpenAI limit per embeddings batch -->
+        <property name="batchMaxInFlight" value="2"/>
+        <property name="batchMaxQueuedTokens" value="0"/>
+        <property name="batchMaxRequestTokens" value="250000"/>  <!-- per request line; OpenAI cap 300,000 -->
+        <property name="batchPollSeconds" value="60"/>
     </bean>
 
     <!--

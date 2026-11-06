@@ -45,6 +45,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   deletes that type's files it did not write; it refuses when that is over 10% of them, unless
  *   --forcePrune is given.
  *   run.sh --mode embed [--index qwen] [--path gene] [--species 3] [--rgdId N,N] [--force] [--outDir path]
+ *   run.sh --mode batch-embed [--path gene,qtl,reference] [--species 3] [--rgdId N,N] [--force]
  *   run.sh --mode refresh-objects [--path strain] [--species 3] [--rgdId N,N] [--outDir path]
  * </pre>
  *
@@ -150,6 +151,16 @@ public class Manager {
             service.run(outputDir, path, speciesDir, rgdIdArg, force);
             return;
         }
+        if ("batch-embed".equalsIgnoreCase(mode)) {
+            // Same result as --mode embed, bought through the OpenAI Batch API: asynchronous
+            // (within 24 hours) and discounted. --path takes a comma-separated list of types.
+            EmbedService service = selectEmbedService(index);
+            String speciesDir = speciesProvided
+                    ? MarkdownWriter.safeSymbol(SpeciesType.getCommonName(speciesTypeKey)).toLowerCase()
+                    : null;
+            service.runBatch(outputDir, path, speciesDir, rgdIdArg, force);
+            return;
+        }
         if ("refresh-objects".equalsIgnoreCase(mode)) {
             // Resolved the same way as an embed run, so this keeps working when the only
             // configuration is the embedServices map. Which index is picked barely matters:
@@ -163,7 +174,7 @@ public class Manager {
             return;
         }
         if (!"generate".equalsIgnoreCase(mode)) {
-            throw new IllegalArgumentException("unknown --mode '" + mode + "' (expected generate, embed or refresh-objects)");
+            throw new IllegalArgumentException("unknown --mode '" + mode + "' (expected generate, embed, batch-embed or refresh-objects)");
         }
 
         // Logged here (not before the mode dispatch) so an embed run never writes to the

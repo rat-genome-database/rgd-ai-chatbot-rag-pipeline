@@ -116,11 +116,6 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         appendVariantCount(md, gene);
         appendDamagingVariants(md, rgdId);
         appendReferences(md, rgdId);
-        // Human "QTLs" are GWAS associations, thousands per region; listing them on every human
-        // gene floods the index with rows that say nothing about the gene itself.
-        if (gene.getSpeciesTypeKey() != SpeciesType.HUMAN) {
-            appendQtlsInRegion(md, gene.getRgdId(), gene.getSpeciesTypeKey());
-        }
         appendNucleotideSequences(md, gene);
         appendProteinSequences(md, gene);
         appendExternalDbLinks(md, gene.getRgdId(), gene.getSpeciesTypeKey());
@@ -192,12 +187,15 @@ public class GeneReportGenerator extends AbstractReportGenerator {
 
     /**
      * QTLs this gene is a curated candidate gene for — the "Candidate Gene Status" the QTL report
-     * shows. Unlike QTLs in Region (overlap only), this is a curator's assertion that the gene
-     * may underlie the QTL.
+     * shows. Unlike mere overlap with the QTL's region (which the chatbot answers from coordinates),
+     * this is a curator's assertion that the gene may underlie the QTL.
      */
     private String candidateGeneFor(Gene gene) throws Exception {
+        List<edu.mcw.rgd.datamodel.QTL> found = new ArrayList<>(dao.getQtlsForCandidateGene(gene.getKey()));
+        found.sort(Comparator.comparing((edu.mcw.rgd.datamodel.QTL q) -> Utils.defaultString(q.getSymbol()), TEXT)
+                .thenComparingInt(edu.mcw.rgd.datamodel.QTL::getRgdId));
         LinkedHashSet<String> qtls = new LinkedHashSet<>();
-        for (edu.mcw.rgd.datamodel.QTL q : dao.getQtlsForCandidateGene(gene.getKey())) {
+        for (edu.mcw.rgd.datamodel.QTL q : found) {
             if (!Utils.isStringEmpty(q.getSymbol())) {
                 qtls.add(Md.link(q.getSymbol().trim(), QTL_REPORT_URL + q.getRgdId()));
             }
@@ -226,7 +224,7 @@ public class GeneReportGenerator extends AbstractReportGenerator {
                 values.add(a.getValue().trim());
             }
         }
-        return String.join(", ", values);
+        return sortedJoin(values, ", ");
     }
 
     /**
@@ -255,10 +253,10 @@ public class GeneReportGenerator extends AbstractReportGenerator {
 
         List<String> parts = new ArrayList<>();
         if (!qtls.isEmpty()) {
-            parts.add("QTLs: " + String.join(", ", qtls));
+            parts.add("QTLs: " + sortedJoin(qtls, ", "));
         }
         if (!strains.isEmpty()) {
-            parts.add("Strains: " + String.join(", ", strains));
+            parts.add("Strains: " + sortedJoin(strains, ", "));
         }
         return String.join("; ", parts);
     }
@@ -268,7 +266,7 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         return s.replaceAll("<[^>]*>", "").trim();
     }
 
-    /** Distinct non-empty values of one field across the models, in encounter order. */
+    /** Distinct non-empty values of one field across the models, sorted. */
     private String distinctJoined(List<GeneticModel> models,
                                   java.util.function.Function<GeneticModel, String> field) {
         if (models == null || models.isEmpty()) {
@@ -281,7 +279,7 @@ public class GeneReportGenerator extends AbstractReportGenerator {
                 values.add(value.trim());
             }
         }
-        return String.join(", ", values);
+        return sortedJoin(values, ", ");
     }
 
     /**
@@ -298,7 +296,9 @@ public class GeneReportGenerator extends AbstractReportGenerator {
 
         if (assemblies != null && !assemblies.isEmpty()) {
             for (Map assembly : assemblies) {
-                for (MapData d : dao.getMapData(rgdId, assembly.getKey())) {
+                List<MapData> data = new ArrayList<>(dao.getMapData(rgdId, assembly.getKey()));
+                data.sort(MAP_DATA_ORDER);
+                for (MapData d : data) {
                     rows.add(positionRow(assembly.getName(), d));
                 }
             }
@@ -314,7 +314,8 @@ public class GeneReportGenerator extends AbstractReportGenerator {
             }
             // Primary/most-recent assemblies first (lower rank), then by name.
             placements.sort(Comparator.<Placement>comparingInt(p -> p.assembly.getRank())
-                    .thenComparing(p -> Utils.defaultString(p.assembly.getName())));
+                    .thenComparing(p -> Utils.defaultString(p.assembly.getName()))
+                    .thenComparing(Placement::data, MAP_DATA_ORDER));
             for (Placement p : placements) {
                 rows.add(positionRow(p.assembly.getName(), p.data));
             }
@@ -377,7 +378,7 @@ public class GeneReportGenerator extends AbstractReportGenerator {
             return;
         }
         md.append(Md.heading(2, "Aliases"));
-        md.append(String.join(", ", values)).append("\n\n");
+        md.append(sortedJoin(values, ", ")).append("\n\n");
     }
 
     private void appendOrthologs(StringBuilder md, int rgdId) throws Exception {
@@ -385,6 +386,10 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         if (orthologs == null || orthologs.isEmpty()) {
             return;
         }
+        orthologs = new ArrayList<>(orthologs);
+        orthologs.sort(Comparator.comparingInt(Gene::getSpeciesTypeKey)
+                .thenComparing(o -> Utils.defaultString(o.getSymbol()), TEXT)
+                .thenComparingInt(Gene::getRgdId));
         List<List<String>> rows = new ArrayList<>();
         for (Gene o : orthologs) {
             rows.add(List.of(
@@ -491,7 +496,9 @@ public class GeneReportGenerator extends AbstractReportGenerator {
             return;
         }
         MapData pos = null;
-        for (MapData d : dao.getMapData(gene.getRgdId(), mapKey)) {
+        List<MapData> placements = new ArrayList<>(dao.getMapData(gene.getRgdId(), mapKey));
+        placements.sort(MAP_DATA_ORDER);
+        for (MapData d : placements) {
             if (d.getChromosome() != null && d.getStartPos() != null && d.getStopPos() != null) {
                 pos = d;
                 break;
@@ -521,6 +528,8 @@ public class GeneReportGenerator extends AbstractReportGenerator {
             return;
         }
 
+        assemblyKeys = new ArrayList<>(assemblyKeys);
+        assemblyKeys.sort(TEXT);
         StringBuilder buf = new StringBuilder();
         for (String mapKeyStr : assemblyKeys) {
             List<Variant> variants = dao.getDamagingVariantsForGene(rgdId, mapKeyStr);
@@ -528,7 +537,15 @@ public class GeneReportGenerator extends AbstractReportGenerator {
                 continue;
             }
 
-            // Collapse the same variant seen across multiple samples.
+            // Collapse the same variant seen across multiple samples; list by position.
+            variants = new ArrayList<>(variants);
+            variants.sort(Comparator.comparing((Variant v) -> Utils.defaultString(v.getChromosome()), TEXT)
+                    .thenComparingLong(Variant::getStartPos)
+                    .thenComparingLong(Variant::getEndPos)
+                    .thenComparing(v -> Utils.defaultString(v.getReferenceNucleotide()), TEXT)
+                    .thenComparing(v -> Utils.defaultString(v.getVariantNucleotide()), TEXT)
+                    .thenComparing(v -> Utils.defaultString(v.getRsId()), TEXT)
+                    .thenComparing(v -> Utils.defaultString(v.getVariantType()), TEXT));
             LinkedHashMap<String, Variant> unique = new LinkedHashMap<>();
             for (Variant v : variants) {
                 String key = v.getChromosome() + ":" + v.getStartPos() + "-" + v.getEndPos()
@@ -575,7 +592,9 @@ public class GeneReportGenerator extends AbstractReportGenerator {
         if (strains == null || strains.isEmpty()) {
             return;
         }
-        strains.sort(Comparator.comparing(s -> Utils.defaultString(s.getSymbol()).toLowerCase()));
+        strains = new ArrayList<>(strains);
+        strains.sort(Comparator.comparing((Strain s) -> Utils.defaultString(s.getSymbol()), TEXT)
+                .thenComparingInt(Strain::getRgdId));
         List<String> links = new ArrayList<>();
         for (Strain s : strains) {
             links.add(Md.link(Utils.defaultString(s.getSymbol()), STRAIN_REPORT_URL + s.getRgdId()));

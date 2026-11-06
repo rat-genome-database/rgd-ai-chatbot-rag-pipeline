@@ -16,7 +16,6 @@ import edu.mcw.rgd.dao.impl.NotesDAO;
 import edu.mcw.rgd.dao.impl.QTLDAO;
 import edu.mcw.rgd.dao.impl.RGDManagementDAO;
 import edu.mcw.rgd.dao.impl.ReferenceDAO;
-import edu.mcw.rgd.dao.impl.SSLPDAO;
 import edu.mcw.rgd.dao.impl.SampleDAO;
 import edu.mcw.rgd.dao.impl.StrainDAO;
 import edu.mcw.rgd.dao.impl.VariantDAO;
@@ -29,13 +28,11 @@ import edu.mcw.rgd.datamodel.Gene;
 import edu.mcw.rgd.datamodel.GenomicElement;
 import edu.mcw.rgd.datamodel.Map;
 import edu.mcw.rgd.datamodel.MapData;
-import edu.mcw.rgd.datamodel.MappedQTL;
 import edu.mcw.rgd.datamodel.NomenclatureEvent;
 import edu.mcw.rgd.datamodel.Note;
 import edu.mcw.rgd.datamodel.QTL;
 import edu.mcw.rgd.datamodel.Reference;
 import edu.mcw.rgd.datamodel.RgdId;
-import edu.mcw.rgd.datamodel.SSLP;
 import edu.mcw.rgd.datamodel.Sample;
 import edu.mcw.rgd.datamodel.SpeciesType;
 import edu.mcw.rgd.datamodel.Strain;
@@ -74,7 +71,6 @@ public class DAO {
     private final RGDManagementDAO rgdManagementDAO = new RGDManagementDAO();
     private final ReferenceDAO referenceDAO = new ReferenceDAO();
     private final QTLDAO qtlDAO = new QTLDAO();
-    private final SSLPDAO sslpDAO = new SSLPDAO();
     private final AssociationDAO associationDAO = new AssociationDAO();
     private final GWASCatalogDAO gwasCatalogDAO = new GWASCatalogDAO();
     private final GeneticModelsDAO geneticModelsDAO = new GeneticModelsDAO();
@@ -262,29 +258,6 @@ public class DAO {
      */
     public java.util.Map<Integer, String> getQtlToQtlAssociations(int qtlKey) throws Exception {
         return associationDAO.getQtlToQtlAssociations(qtlKey);
-    }
-
-    /** Active QTLs whose mapped region overlaps [start, stop] on the given chromosome/assembly. */
-    public List<MappedQTL> getQtlsInRegion(String chromosome, long start, long stop, int mapKey) throws Exception {
-        return qtlDAO.getActiveMappedQTLs(chromosome, start, stop, mapKey);
-    }
-
-    /**
-     * Active genes whose position on the given assembly overlaps [start, stop], sorted by symbol.
-     * Used for a QTL/region report's "Genes in Region" list. Only identity fields (RGD ID,
-     * symbol, name) are needed by the caller — positions are intentionally not reported.
-     */
-    public List<Gene> getGenesInRegion(String chromosome, long start, long stop, int mapKey) throws Exception {
-        return geneDAO.getActiveGenesSortedBySymbol(chromosome, start, stop, mapKey);
-    }
-
-    /**
-     * Active markers (SSLPs) whose position on the given assembly overlaps [start, stop]. Used
-     * for a QTL's "Markers in Region" list — only the marker's name and RGD ID are reported, not
-     * its position.
-     */
-    public List<SSLP> getMarkersInRegion(String chromosome, long start, long stop, int mapKey) throws Exception {
-        return sslpDAO.getActiveSSLPs(chromosome, start, stop, mapKey);
     }
 
     /**

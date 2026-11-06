@@ -4,7 +4,6 @@ import edu.mcw.rgd.chatBotEmbed.DAO;
 import edu.mcw.rgd.chatBotEmbed.Md;
 import edu.mcw.rgd.chatBotEmbed.ReportGenerator;
 import edu.mcw.rgd.datamodel.MapData;
-import edu.mcw.rgd.datamodel.MappedQTL;
 import edu.mcw.rgd.datamodel.NomenclatureEvent;
 import edu.mcw.rgd.datamodel.Note;
 import edu.mcw.rgd.datamodel.QTL;
@@ -52,6 +51,59 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
 
     /** Longest curator note kept in an annotation table cell. */
     private static final int MAX_ANNOTATION_NOTES = 300;
+
+    /**
+     * A total order on text: case-insensitive first, then exact, so two values that differ only in
+     * case still sort the same way every run.
+     *
+     * <p>Every list a report prints is sorted on a complete key rather than left in database
+     * order. Several queries have no ORDER BY, and Oracle returns their rows in whatever order the
+     * plan produces, so an unsorted list can come out differently on two runs over the same data.
+     * The embed step re-embeds any chunk whose text changed, so that churn would be paid for on
+     * every refresh.</p>
+     */
+    protected static final Comparator<String> TEXT =
+            String.CASE_INSENSITIVE_ORDER.thenComparing(Comparator.naturalOrder());
+
+    /** Order for position rows: chromosome, start, stop, strand. */
+    protected static final Comparator<MapData> MAP_DATA_ORDER =
+            Comparator.comparing((MapData d) -> Utils.defaultString(d.getChromosome()), TEXT)
+                    .thenComparing(d -> d.getStartPos() == null ? Integer.MIN_VALUE : d.getStartPos())
+                    .thenComparing(d -> d.getStopPos() == null ? Integer.MIN_VALUE : d.getStopPos())
+                    .thenComparing(d -> Utils.defaultString(d.getStrand()), TEXT);
+
+    /** Distinct values in {@link #TEXT} order, joined with {@code separator}. */
+    protected static String sortedJoin(java.util.Collection<String> values, String separator) {
+        java.util.TreeSet<String> sorted = new java.util.TreeSet<>(TEXT);
+        sorted.addAll(values);
+        return String.join(separator, sorted);
+    }
+
+    /** Sort table rows cell by cell in {@link #TEXT} order. */
+    protected static void sortRows(List<List<String>> rows) {
+        rows.sort(ROW_ORDER);
+    }
+
+    /** Cell-by-cell {@link #TEXT} order on table rows. */
+    protected static final Comparator<List<String>> ROW_ORDER = (a, b) -> {
+        for (int i = 0; i < Math.min(a.size(), b.size()); i++) {
+            int c = TEXT.compare(a.get(i), b.get(i));
+            if (c != 0) {
+                return c;
+            }
+        }
+        return Integer.compare(a.size(), b.size());
+    };
+
+    /** Order for annotations: term name, accession, qualifier, evidence, reference, source, notes. */
+    private static final Comparator<Annotation> ANNOTATION_ORDER =
+            Comparator.comparing((Annotation a) -> Utils.defaultString(a.getTerm()), TEXT)
+                    .thenComparing(a -> Utils.defaultString(a.getTermAcc()), TEXT)
+                    .thenComparing(a -> Utils.defaultString(a.getQualifier()), TEXT)
+                    .thenComparing(a -> Utils.defaultString(a.getEvidence()), TEXT)
+                    .thenComparing(a -> a.getRefRgdId() == null ? 0 : a.getRefRgdId())
+                    .thenComparing(a -> Utils.defaultString(a.getDataSrc()), TEXT)
+                    .thenComparing(a -> Utils.defaultString(a.getNotes()), TEXT);
 
     protected final DAO dao;
 
@@ -146,23 +198,25 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
     /**
      * Drop annotations whose evidence code is in {@link #EXCLUDED_EVIDENCE}, but only when the
      * set is large (more than {@link #EVIDENCE_FILTER_THRESHOLD}). Smaller sets are kept in
-     * full — the filter exists to trim heavily-annotated objects, not sparse ones.
+     * full — the filter exists to trim heavily-annotated objects, not sparse ones. The result is
+     * a new list in {@link #ANNOTATION_ORDER}.
      */
     protected static List<Annotation> filterEvidence(List<Annotation> annotations) {
         if (annotations == null) {
             return new ArrayList<>();
         }
-        if (annotations.size() <= EVIDENCE_FILTER_THRESHOLD) {
-            return annotations;
-        }
         List<Annotation> kept = new ArrayList<>();
+        boolean filter = annotations.size() > EVIDENCE_FILTER_THRESHOLD;
         for (Annotation a : annotations) {
             String ev = a.getEvidence();
-            if (ev != null && EXCLUDED_EVIDENCE.contains(ev.trim().toUpperCase())) {
+            if (filter && ev != null && EXCLUDED_EVIDENCE.contains(ev.trim().toUpperCase())) {
                 continue;
             }
             kept.add(a);
         }
+        // Sorted here, before any de-duplication, so the annotation kept for a row (and so the
+        // reference it shows) does not depend on the order the database returned them in.
+        kept.sort(ANNOTATION_ORDER);
         return kept;
     }
 
@@ -229,19 +283,19 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
      *                       {@code qtl_cross_type}), left out so they are not embedded twice
      */
     protected void appendCuratorNotes(StringBuilder md, int rgdId, Set<String> shownElsewhere) throws Exception {
-        LinkedHashMap<String, LinkedHashSet<String>> byType = new LinkedHashMap<>();
+        java.util.TreeMap<String, java.util.TreeSet<String>> byType = new java.util.TreeMap<>(TEXT);
         for (Note n : dao.getPublicNotes(rgdId)) {
             String type = Utils.defaultString(n.getNotesTypeName()).trim().toLowerCase();
             if (shownElsewhere.contains(type)) {
                 continue;
             }
-            byType.computeIfAbsent(type, k -> new LinkedHashSet<>()).add(n.getNotes().trim());
+            byType.computeIfAbsent(type, k -> new java.util.TreeSet<>(TEXT)).add(n.getNotes().trim());
         }
         if (byType.isEmpty()) {
             return;
         }
         md.append(Md.heading(2, "Curator Notes"));
-        for (Map.Entry<String, LinkedHashSet<String>> e : byType.entrySet()) {
+        for (Map.Entry<String, java.util.TreeSet<String>> e : byType.entrySet()) {
             md.append(Md.heading(3, noteTypeLabel(e.getKey())));
             for (String text : e.getValue()) {
                 md.append("- ").append(text.replace("\r", " ").replace("\n", " ")).append("\n");
@@ -290,13 +344,18 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
             if (db == null) return -1;
             return db.compareTo(da);
         });
+        // Same-date references (common: a curation batch shares one date) keep a fixed order.
+        references.sort(Comparator.comparing(Reference::getPubDate,
+                        Comparator.nullsLast(Comparator.<Date>reverseOrder()))
+                .thenComparingInt(Reference::getRgdId));
 
         List<List<String>> rows = new ArrayList<>();
         for (Reference ref : references) {
-            List<String> pmids = dao.getPubmedIdsForReference(ref.getRgdId());
+            List<String> pmids = new ArrayList<>(dao.getPubmedIdsForReference(ref.getRgdId()));
             if (pmids.isEmpty()) {
                 continue;   // keep only PubMed references
             }
+            pmids.sort(TEXT);
             List<String> links = new ArrayList<>();
             for (String pmid : pmids) {
                 links.add(Md.link("PMID:" + pmid, "https://pubmed.ncbi.nlm.nih.gov/" + pmid + "/"));
@@ -315,66 +374,6 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
     }
 
     /**
-     * QTLs in Region section: QTLs whose mapped region overlaps this object's position on its
-     * species' primary reference assembly (e.g. GRCr8 for rat). The object may be placed more
-     * than once on that assembly; each placement's region is queried and the QTLs are merged,
-     * deduplicated by QTL RGD ID. The object itself is excluded, so a QTL report does not list
-     * itself among the QTLs overlapping its own region.
-     *
-     * @param rgdId          the object (gene or QTL) whose region is queried
-     * @param speciesTypeKey that object's species, used to pick the primary reference assembly
-     */
-    protected void appendQtlsInRegion(StringBuilder md, int rgdId, int speciesTypeKey) throws Exception {
-        edu.mcw.rgd.datamodel.Map primary = dao.getPrimaryRefAssembly(speciesTypeKey);
-        if (primary == null) {
-            return;
-        }
-        List<MapData> placements = dao.getMapData(rgdId, primary.getKey());
-        if (placements == null || placements.isEmpty()) {
-            return;
-        }
-
-        // Merge QTLs across every placement, keeping one row per QTL RGD ID; exclude self.
-        LinkedHashMap<Integer, MappedQTL> unique = new LinkedHashMap<>();
-        for (MapData d : placements) {
-            if (d.getChromosome() == null || d.getStartPos() == null || d.getStopPos() == null) {
-                continue;
-            }
-            for (MappedQTL mq : dao.getQtlsInRegion(d.getChromosome(), d.getStartPos(), d.getStopPos(), primary.getKey())) {
-                QTL q = mq.getQTL();
-                if (q != null && q.getRgdId() != rgdId) {
-                    unique.putIfAbsent(q.getRgdId(), mq);
-                }
-            }
-        }
-        if (unique.isEmpty()) {
-            return;
-        }
-
-        List<MappedQTL> mapped = new ArrayList<>(unique.values());
-        mapped.sort(Comparator.comparing(mq -> Utils.defaultString(mq.getQTL().getSymbol()).toLowerCase()));
-
-        List<List<String>> rows = new ArrayList<>();
-        for (MappedQTL mq : mapped) {
-            QTL qtl = mq.getQTL();
-            int qtlRgdId = qtl.getRgdId();
-            rows.add(List.of(
-                    Md.link(Utils.defaultString(qtl.getSymbol()), QTL_REPORT_URL + qtlRgdId),
-                    Md.cell(Utils.defaultString(qtl.getName())),
-                    Md.cell(lodValue(qtl)),
-                    Md.cell(pValue(qtl)),
-                    Md.cell(dao.getQtlTrait(qtlRgdId)),
-                    Md.cell(dao.getQtlSubtrait(qtlRgdId, qtl.getMostSignificantCmoTerm()))
-            ));
-        }
-
-        md.append(Md.heading(2, "QTLs in Region (" + primary.getName() + ")"));
-        md.append("*QTLs whose mapped region overlaps this region on "
-                + primary.getName() + ".*\n\n");
-        md.append(Md.table(List.of("Symbol", "Name", "LOD", "P-value", "Trait", "Sub-trait"), rows));
-    }
-
-    /**
      * External Database Links section: the object's cross-references to other databases, one row
      * per database/accession with the source pipeline(s) that supplied it. Sequence and
      * literature cross-references are excluded (they have their own sections); see
@@ -387,6 +386,13 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
         }
 
         // Collapse duplicate database+accession rows, aggregating their source pipelines.
+        // Sorted first: when several rows share a database and accession, the link text shown is
+        // the first one's, which must not depend on database order.
+        links = new ArrayList<>(links);
+        links.sort(Comparator.comparingInt(XdbId::getXdbKey)
+                .thenComparing(x -> Utils.defaultString(x.getAccId()), TEXT)
+                .thenComparing(x -> Utils.defaultString(x.getLinkText()), TEXT)
+                .thenComparing(x -> Utils.defaultString(x.getSrcPipeline()), TEXT));
         LinkedHashMap<String, ExtLink> byKeyAcc = new LinkedHashMap<>();
         for (XdbId x : links) {
             ExtLink e = byKeyAcc.computeIfAbsent(
@@ -404,8 +410,9 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
             e.database = (xdb != null && !Utils.isStringEmpty(xdb.getName())) ? xdb.getName() : ("XDB " + e.xdbKey);
             e.url = buildXdbUrl(xdb, speciesTypeKey, e.accId);
         }
-        all.sort(Comparator.comparing((ExtLink e) -> e.database.toLowerCase())
-                .thenComparing(e -> e.accId.toLowerCase()));
+        all.sort(Comparator.comparing((ExtLink e) -> e.database, TEXT)
+                .thenComparing(e -> e.accId, TEXT)
+                .thenComparing(e -> e.linkText, TEXT));
 
         List<List<String>> rows = new ArrayList<>();
         for (ExtLink e : all) {
@@ -433,7 +440,7 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
         final int xdbKey;
         final String accId;
         final String linkText;
-        final LinkedHashSet<String> sources = new LinkedHashSet<>();
+        final java.util.TreeSet<String> sources = new java.util.TreeSet<>(TEXT);
         String database;
         String url;
         ExtLink(int xdbKey, String accId, String linkText) {
@@ -499,6 +506,10 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
                     Md.cell(Utils.defaultString(e.getNomenStatusType()))
             ));
         }
+        // Newest first; same-day events in a fixed order. Dates are ISO yyyy-MM-dd, so text order
+        // is date order.
+        rows.sort(Comparator.comparing((List<String> r) -> r.get(0), Comparator.reverseOrder())
+                .thenComparing(ROW_ORDER));
         md.append(Md.heading(2, "Nomenclature History"));
         md.append(Md.table(
                 List.of("Date", "Current Symbol", "Current Name", "Previous Symbol",
@@ -537,7 +548,7 @@ public abstract class AbstractReportGenerator implements ReportGenerator {
     private static final class ImportedDisease {
         final String term;
         final String termAcc;
-        final LinkedHashSet<String> sources = new LinkedHashSet<>();
+        final java.util.TreeSet<String> sources = new java.util.TreeSet<>(TEXT);
         ImportedDisease(String term, String termAcc) {
             this.term = term;
             this.termAcc = termAcc;

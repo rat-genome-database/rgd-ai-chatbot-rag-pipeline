@@ -28,7 +28,7 @@ import java.util.List;
  * (its {@code spring.ai.*.embedding} settings). Vectors from different models are not
  * comparable, so a mismatch silently wrecks retrieval rather than erroring.</p>
  */
-public class EmbeddingClient {
+public class EmbeddingClient implements Embedder {
 
     private final String provider;
     private final String baseUrl;
@@ -62,6 +62,7 @@ public class EmbeddingClient {
      * Embed every text, returning vectors in the same order. Ollama receives them in batches
      * of {@code batchSize}; OpenAI keeps its one-request-per-chunk behaviour.
      */
+    @Override
     public List<float[]> embedAll(List<String> texts) throws Exception {
         List<float[]> out = new ArrayList<>(texts.size());
         if ("ollama".equals(provider)) {

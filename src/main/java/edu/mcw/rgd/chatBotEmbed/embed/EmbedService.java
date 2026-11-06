@@ -71,6 +71,15 @@ public class EmbedService {
     // path is read-only here and holds no generated markdown.
     private String oboDir = "data/markdown/ontology/obo";
 
+    // --mode batch-embed (OpenAI Batch API); see BatchEmbedRun.
+    private String batchDir = "data/batch";            // queued batches' request files and manifests
+    private int batchMaxInputs = 50_000;                // OpenAI's limit for embeddings batches
+    private int batchMaxInFlight = 2;                   // batches queued at once
+    private long batchMaxQueuedTokens = 0;              // queue limit for the model; 0 = not enforced here
+    private int batchMaxRequestTokens = 250_000;        // per request line; OpenAI's cap is 300,000
+    private long batchMaxFileBytes = 150L * 1024 * 1024; // request file; OpenAI's cap is 200 MB
+    private int batchPollSeconds = 60;
+
     private final ReportMarkdownChunker chunker = new ReportMarkdownChunker();
 
     /**
@@ -260,6 +269,46 @@ public class EmbedService {
     }
 
     /**
+     * Embed through the OpenAI Batch API instead of live requests: same result as {@link #run},
+     * bought asynchronously (within 24 hours) at a discount. See {@link BatchEmbedRun}.
+     *
+     * @param subPaths comma-separated report-type directories (e.g. "gene,qtl"); blank = all
+     */
+    public void runBatch(String outputDir, String subPaths, String speciesDir,
+                         List<Integer> rgdIds, boolean force) throws Exception {
+        if (!"openai".equalsIgnoreCase(provider)) {
+            throw new IllegalStateException("--mode batch-embed needs the openai provider (this index uses " + provider + ")");
+        }
+        String species = (speciesDir != null && !speciesDir.isBlank()) ? speciesDir.trim() : null;
+        List<Path> files = new ArrayList<>();
+        Path base = Paths.get(outputDir);
+        List<Path> roots = new ArrayList<>();
+        if (subPaths == null || subPaths.isBlank()) {
+            roots.add(base);
+        } else {
+            for (String sp : subPaths.split(",")) {
+                if (!sp.isBlank()) roots.add(base.resolve(sp.trim()));
+            }
+        }
+        for (Path root : roots) {
+            if (!Files.isDirectory(root)) {
+                throw new IllegalArgumentException("not a directory: " + root);
+            }
+            files.addAll(collectFiles(root, species, rgdIds));
+        }
+
+        DocumentEmbeddingDAO embeddingDAO = new DocumentEmbeddingDAO(
+                DataSourceFactory.getInstance().getDataSource(dataSourceName));
+        EmbeddingWriter writer = new EmbeddingWriter(embeddingDAO.getDataSource());
+        writer.verifyTarget(dataSourceName, expectedSchema, dimensions);
+
+        LOG.info("Batch-embedding markdown under {} into schema {} (species={}, model={}, dims={})",
+                roots, expectedSchema, species == null ? "all" : species, model, dimensions);
+        new BatchEmbedRun(this, embeddingDAO, writer, new OpenAiBatchClient(baseUrl, resolveApiKey()), force)
+                .run(files);
+    }
+
+    /**
      * Rewrite {@code report_object} and {@code report_position} from the markdown on disk,
      * without embedding anything.
      *
@@ -344,7 +393,7 @@ public class EmbedService {
     }
 
     /** The markdown files under {@code root}, narrowed by species sub-directory and RGD ID. */
-    private List<Path> collectFiles(Path root, String species, List<Integer> rgdIds) throws Exception {
+    List<Path> collectFiles(Path root, String species, List<Integer> rgdIds) throws Exception {
         Set<String> idSuffixes = new HashSet<>();
         if (rgdIds != null) {
             for (Integer id : rgdIds) {
@@ -389,7 +438,7 @@ public class EmbedService {
     }
 
     /** @return chunks written for this file, or -1 if the file was skipped */
-    private int processFile(Path file, EmbeddingClient client, DocumentEmbeddingDAO dao,
+    private int processFile(Path file, Embedder client, DocumentEmbeddingDAO dao,
                             EmbeddingWriter writer, boolean force,
                             AtomicInteger skipped, AtomicInteger changed) throws Exception {
         String content = Files.readString(file, StandardCharsets.UTF_8);
@@ -408,7 +457,7 @@ public class EmbedService {
      *
      * @return chunks written, or -1 when the report was skipped
      */
-    private int processDocument(String rawName, String content, EmbeddingClient client,
+    int processDocument(String rawName, String content, Embedder client,
                                 DocumentEmbeddingDAO dao, EmbeddingWriter writer, boolean force,
                                 AtomicInteger skipped, AtomicInteger changed) throws Exception {
         String displayName = resolveDisplayName(content, rawName);
@@ -419,25 +468,9 @@ public class EmbedService {
             return -1;
         }
 
-        // Fold the RGD ID into the H1 title (e.g. "# Gene: A2m ..." -> "# Gene: RGD:2004 A2m ..."),
-        // so it rides along in the heading breadcrumb the chunker prepends to every chunk — each
-        // chunk then carries the identity of the object it came from. Done on the markdown before
-        // chunking so the breadcrumb is formed with it in place.
-        String rgdId = resolveRgdId(displayName, rawName);
-        if (rgdId != null) {
-            content = injectRgdIdIntoTitle(content, rgdId);
-        } else {
-            LOG.debug("Could not resolve RGD ID for {} — embedding chunks without an RGD id in the title", rawName);
-        }
-
         // Chunk exactly as the chatbot would. Done up front (chunking is local/cheap) so the
         // result can be compared to what's already stored before spending any embedding calls.
-        List<String> chunks = new ArrayList<>();
-        for (String c : chunker.chunk(content)) {
-            if (c != null && c.trim().length() >= MIN_CHUNK_CHARS) {
-                chunks.add(c);
-            }
-        }
+        List<String> chunks = chunksFor(displayName, rawName, content);
         if (chunks.isEmpty()) {
             LOG.debug("No usable chunks produced: {}", rawName);
             return 0;
@@ -518,6 +551,28 @@ public class EmbedService {
     }
 
     /**
+     * The chunks a report is stored as. The RGD ID is folded into the H1 title first (e.g.
+     * "# Gene: A2m ..." -> "# Gene: RGD:2004 A2m ..."), so it rides along in the heading
+     * breadcrumb the chunker prepends to every chunk and each chunk carries the identity of the
+     * object it came from. Chunks shorter than {@link #MIN_CHUNK_CHARS} are dropped.
+     */
+    List<String> chunksFor(String displayName, String rawName, String content) {
+        String rgdId = resolveRgdId(displayName, rawName);
+        if (rgdId != null) {
+            content = injectRgdIdIntoTitle(content, rgdId);
+        } else {
+            LOG.debug("Could not resolve RGD ID for {} — embedding chunks without an RGD id in the title", rawName);
+        }
+        List<String> chunks = new ArrayList<>();
+        for (String c : chunker.chunk(content)) {
+            if (c != null && c.trim().length() >= MIN_CHUNK_CHARS) {
+                chunks.add(c);
+            }
+        }
+        return chunks;
+    }
+
+    /**
      * Re-embed only the chunks whose text actually changed.
      *
      * <p>Chunks are compared by content and by count, so a text appearing twice in a report is
@@ -534,7 +589,7 @@ public class EmbedService {
      */
     private int partialUpdate(String displayName, Long objectRgdId, ReportMetadata.Identity identity,
                               List<String> chunks, List<String> sections, List<String> stored,
-                              EmbeddingClient client, DocumentEmbeddingDAO dao,
+                              Embedder client, DocumentEmbeddingDAO dao,
                               EmbeddingWriter writer) throws Exception {
         java.util.Map<String, Integer> storedCounts = countByText(stored);
         java.util.Map<String, Integer> currentCounts = countByText(chunks);
@@ -625,7 +680,7 @@ public class EmbedService {
      * that file (which should contain only the key); otherwise fall back to the environment
      * variable named by {@code apiKeyEnv}. The key is never stored in the pipeline config.
      */
-    private String resolveApiKey() throws Exception {
+    String resolveApiKey() throws Exception {
         if (apiKeyFile != null && !apiKeyFile.isBlank()) {
             Path keyPath = Paths.get(apiKeyFile.trim());
             if (!Files.isRegularFile(keyPath)) {
@@ -717,7 +772,7 @@ public class EmbedService {
     }
 
     /** Pull the display name from the leading {@code <!-- file_name: ... -->} comment. */
-    private static String resolveDisplayName(String content, String fallback) {
+    static String resolveDisplayName(String content, String fallback) {
         if (content.startsWith("<!-- file_name:")) {
             int end = content.indexOf("-->");
             if (end > 0) {
@@ -742,6 +797,24 @@ public class EmbedService {
     public void setBatchSize(int batchSize) { this.batchSize = batchSize; }
     public void setExpectedSchema(String expectedSchema) { this.expectedSchema = expectedSchema; }
     public void setOboDir(String oboDir) { this.oboDir = oboDir; }
+    public void setBatchDir(String batchDir) { this.batchDir = batchDir; }
+    public void setBatchMaxInputs(int batchMaxInputs) { this.batchMaxInputs = Math.min(50_000, batchMaxInputs); }
+    public void setBatchMaxInFlight(int batchMaxInFlight) { this.batchMaxInFlight = Math.max(1, batchMaxInFlight); }
+    public void setBatchMaxQueuedTokens(long batchMaxQueuedTokens) { this.batchMaxQueuedTokens = batchMaxQueuedTokens; }
+    public void setBatchMaxRequestTokens(int batchMaxRequestTokens) { this.batchMaxRequestTokens = Math.min(300_000, batchMaxRequestTokens); }
+    public void setBatchMaxFileBytes(long batchMaxFileBytes) { this.batchMaxFileBytes = batchMaxFileBytes; }
+    public void setBatchPollSeconds(int batchPollSeconds) { this.batchPollSeconds = Math.max(10, batchPollSeconds); }
+
+    String getBatchDir() { return batchDir; }
+    int getBatchMaxInputs() { return batchMaxInputs; }
+    int getBatchMaxInFlight() { return batchMaxInFlight; }
+    long getBatchMaxQueuedTokens() { return batchMaxQueuedTokens; }
+    int getBatchMaxRequestTokens() { return batchMaxRequestTokens; }
+    long getBatchMaxFileBytes() { return batchMaxFileBytes; }
+    int getBatchPollSeconds() { return batchPollSeconds; }
+    String getModel() { return model; }
+    int getDimensions() { return dimensions; }
+    int getThreadCount() { return threadCount; }
     public void setDataSourceName(String dataSourceName) { this.dataSourceName = dataSourceName; }
     public String getExpectedSchema() { return expectedSchema; }
 }
