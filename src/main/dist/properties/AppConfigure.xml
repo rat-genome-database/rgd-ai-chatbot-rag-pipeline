@@ -94,8 +94,8 @@
              OpenAI then rejects a batch that does not fit, and it is retried later). -->
         <property name="batchDir" value="data/batch"/>
         <property name="batchMaxInputs" value="50000"/>          <!-- OpenAI limit per embeddings batch -->
-        <property name="batchMaxInFlight" value="2"/>
-        <property name="batchMaxQueuedTokens" value="0"/>
+        <property name="batchMaxInFlight" value="10"/>           <!-- ~20M tokens per full batch; 10 queued = ~200M -->
+        <property name="batchMaxQueuedTokens" value="500000000"/> <!-- org batch queue limit for text-embedding-3-large: 500M -->
         <property name="batchMaxRequestTokens" value="250000"/>  <!-- per request line; OpenAI cap 300,000 -->
         <property name="batchPollSeconds" value="60"/>
     </bean>
