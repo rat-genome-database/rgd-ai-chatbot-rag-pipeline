@@ -12,6 +12,11 @@
 #
 # Human QTLs are skipped: they are ~913K GWAS associations, which would take days to generate,
 # dominate embedding cost and crowd retrieval. GWAS questions belong to a structured lookup.
+
+APPNAME=rgd-ai-chatbot-rag-pipeline
+APPDIR=/home/rgddata/pipelines/$APPNAME
+cd $APPDIR
+
 for SPECIES in 3 1 2 4 5 6 7 9 13 14 17; do
     ./run.sh --mode generate --type gene --species $SPECIES
     if [ "$SPECIES" != "1" ]; then
