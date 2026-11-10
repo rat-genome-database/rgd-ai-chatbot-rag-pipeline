@@ -10,8 +10,9 @@
 # Cell lines for human (~124K) and mouse (~30K) are mostly Cellosaurus imports; choose at
 # embed time whether to include them (embedCellLineMD.sh --species <key>).
 #
-# Human QTLs are skipped: they are ~913K GWAS associations, which would take days to generate,
-# dominate embedding cost and crowd retrieval. GWAS questions belong to a structured lookup.
+# Human GWAS QTLs (symbol starts with GWAS, ~930K GWAS Catalog associations) are skipped inside
+# QtlReportGenerator: they would take days to generate, dominate embedding cost and crowd
+# retrieval. GWAS questions belong to a structured lookup. Other human QTLs are generated.
 
 APPNAME=rgd-ai-chatbot-rag-pipeline
 APPDIR=/home/rgddata/pipelines/$APPNAME
@@ -19,9 +20,7 @@ cd $APPDIR
 
 for SPECIES in 3 1 2 4 5 6 7 9 13 14 17; do
     ./run.sh --mode generate --type gene --species $SPECIES
-    if [ "$SPECIES" != "1" ]; then
-        ./run.sh --mode generate --type qtl --species $SPECIES
-    fi
+    ./run.sh --mode generate --type qtl --species $SPECIES
     ./run.sh --mode generate --type strain --species $SPECIES
     ./run.sh --mode generate --type cellline --species $SPECIES
 done
