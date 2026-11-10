@@ -80,6 +80,12 @@ public class QtlReportGenerator extends AbstractReportGenerator {
         List<QTL> qtls = dao.getActiveQtls(speciesTypeKey);
         List<Integer> ids = new ArrayList<>(qtls.size());
         for (QTL q : qtls) {
+            // Human GWAS QTLs (~930K GWAS Catalog associations) are not generated: they would
+            // dominate generation time and embedding cost and crowd retrieval.
+            if (q.getSpeciesTypeKey() == SpeciesType.HUMAN
+                    && q.getSymbol() != null && q.getSymbol().startsWith("GWAS")) {
+                continue;
+            }
             ids.add(q.getRgdId());
         }
         return ids;
