@@ -8,5 +8,10 @@
 #
 # Cell lines are embedded for rat only; pass other arguments through to both runs
 # (e.g. --force). Ontology terms from OBO files are not included: run ./embedObo.sh.
+
+APPNAME=rgd-ai-chatbot-rag-pipeline
+APPDIR=/home/rgddata/pipelines/$APPNAME
+cd $APPDIR
+
 ./run.sh --mode batch-embed --path gene,qtl,strain,reference,pathway,expectedrange,website "$@"
 ./run.sh --mode batch-embed --path cellline --species 3 "$@"
