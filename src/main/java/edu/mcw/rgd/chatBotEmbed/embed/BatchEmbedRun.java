@@ -69,6 +69,7 @@ class BatchEmbedRun {
 
     private static final Logger LOG = LogManager.getLogger("embed");
     private static final int MAX_INPUTS_PER_REQUEST = 2048;
+    private static final int MAX_INPUT_TOKENS = 8192;   // per input, for text-embedding-3 models
     private static final DateTimeFormatter ID_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     private final EmbedService service;
@@ -208,7 +209,14 @@ class BatchEmbedRun {
         int tok = 0;
         long bytes = 0;
         for (String c : needed) {
-            tok += tokens.countTokens(c);
+            int n = tokens.countTokens(c);
+            // OpenAI rejects the whole request carrying an oversize input, losing every report
+            // that shares it, so such a report fails here on its own and is never sent.
+            if (n > MAX_INPUT_TOKENS) {
+                throw new IllegalStateException("a chunk of '" + displayName + "' is " + n
+                        + " tokens; the embeddings endpoint accepts at most " + MAX_INPUT_TOKENS);
+            }
+            tok += n;
             bytes += c.getBytes(StandardCharsets.UTF_8).length;
         }
         return new Plan(rawName, content, needed, tok, bytes);
