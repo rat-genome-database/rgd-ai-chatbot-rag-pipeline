@@ -26,7 +26,8 @@ import java.util.regex.Pattern;
  * 3. Detects table headers (rows above |---|) and prepends them to split table chunks
  * 4. Splits at line boundaries — never mid-line
  * 5. Prepends the heading breadcrumb to every chunk for retrieval context
- * 6. Handles oversized lines (>MAX_TOKENS) by splitting at link boundaries
+ * 6. Handles oversized lines (>MAX_TOKENS) by splitting at link boundaries, then as prose,
+ *    so no chunk's content exceeds MAX_TOKENS (the embeddings endpoint rejects inputs over 8,192)
  */
 public class ReportMarkdownChunker {
 
@@ -302,7 +303,8 @@ public class ReportMarkdownChunker {
     /**
      * Split an oversized line at logical boundaries so each part fits within maxTokens.
      * Tries ")[" first (consecutive markdown links like ](url)[next),
-     * then "), [" (comma-separated links), then " | " (table cells).
+     * then "), [" (comma-separated links), then " | " (table cells); any part still over
+     * the limit is split as prose (see splitProse).
      */
     private List<String> splitLongLine(String line, int maxTokens) {
         // Find break points: after ")[" — consecutive markdown links with no separator
@@ -319,12 +321,73 @@ public class ReportMarkdownChunker {
             breaks = findBreakPoints(line, " | ", 3);
         }
 
-        // No break points found — return as-is
+        // No link or cell boundaries (e.g. a long paragraph): split it as prose
         if (breaks.isEmpty()) {
-            LOG.warn("No break points found in {}-char line, keeping as single chunk", line.length());
-            return List.of(line);
+            return splitProse(line, maxTokens, 0);
         }
 
+        // A single segment between two break points can itself be over the limit
+        List<String> parts = new ArrayList<>();
+        for (String part : pack(line, breaks, maxTokens)) {
+            parts.addAll(splitProse(part, maxTokens, 0));
+        }
+        return parts;
+    }
+
+    /** Prose boundaries, coarsest first, tried when a piece is still over the limit. */
+    private static final String[] PROSE_DELIMITERS = {". ", "; ", ", ", " "};
+
+    /**
+     * Split text still over maxTokens at sentence ends, then clause breaks, then spaces, and as a
+     * last resort (no whitespace at all, e.g. a long identifier list) between characters, so no
+     * part ever exceeds maxTokens. Text within the limit is returned unchanged.
+     */
+    private List<String> splitProse(String text, int maxTokens, int level) {
+        if (countTokens(text) <= maxTokens) {
+            return List.of(text);
+        }
+        for (int d = level; d < PROSE_DELIMITERS.length; d++) {
+            String delim = PROSE_DELIMITERS[d];
+            List<Integer> breaks = findBreakPoints(text, delim, delim.length());
+            breaks.removeIf(bp -> bp >= text.length());
+            if (breaks.isEmpty()) {
+                continue;
+            }
+            List<String> parts = new ArrayList<>();
+            for (String part : pack(text, breaks, maxTokens)) {
+                parts.addAll(splitProse(part, maxTokens, d + 1));
+            }
+            return parts;
+        }
+        LOG.warn("No whitespace in {}-char text over {} tokens, splitting between characters", text.length(), maxTokens);
+        List<String> parts = new ArrayList<>();
+        int start = 0;
+        while (start < text.length()) {
+            String rest = text.substring(start);
+            int tok = countTokens(rest);
+            if (tok <= maxTokens) {
+                parts.add(rest);
+                break;
+            }
+            int end = start + Math.max(1, (int) ((long) rest.length() * maxTokens / tok));
+            while (end > start + 1 && countTokens(text.substring(start, end)) > maxTokens) {
+                end = start + (end - start) * 9 / 10;
+            }
+            if (Character.isHighSurrogate(text.charAt(end - 1)) && end - 1 > start) {
+                end--;
+            }
+            parts.add(text.substring(start, end));
+            start = end;
+        }
+        return parts;
+    }
+
+    /**
+     * Greedily group the segments between break points into parts of at most maxTokens.
+     * A segment that is alone over the limit becomes its own part.
+     */
+    private List<String> pack(String line, List<Integer> breakPoints, int maxTokens) {
+        List<Integer> breaks = new ArrayList<>(breakPoints);
         // Add end of line as final break
         breaks.add(line.length());
 
