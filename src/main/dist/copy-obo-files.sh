@@ -14,7 +14,8 @@
 # The ontology load pipeline keeps .obo files only for the ontologies RGD maintains
 # (RDO, PW, CMO, MMO, XCO, RS). The others it loads (GO, MP, HP, VT, CHEBI, ...) are
 # downloaded here from the same sources it uses (its properties/AppConfigure.xml),
-# saved as <ID>.obo. A failed download is reported and the previous file is kept.
+# saved as <ID>.obo (a .gz source is unpacked). A failed or stalled download is
+# reported and the previous file is kept.
 # Not downloaded: ORDO and MI (need a BioPortal API key), NCBITaxon (no public .obo
 # source in that config) and CVCL (Cellosaurus cell lines, not an ontology).
 #
@@ -39,7 +40,7 @@ GO      http://purl.obolibrary.org/obo/go/snapshot/go-basic.obo
 MP      http://www.informatics.jax.org/downloads/reports/MPheno_OBO.ontology
 HP      https://raw.githubusercontent.com/obophenotype/human-phenotype-ontology/master/hp.obo
 VT      https://raw.githubusercontent.com/AnimalGenome/vertebrate-trait-ontology/master/current_release/vt.obo
-CHEBI   ftp://ftp.ebi.ac.uk/pub/databases/chebi/ontology/chebi.obo
+CHEBI   https://ftp.ebi.ac.uk/pub/databases/chebi/ontology/chebi.obo.gz
 UBERON  http://purl.obolibrary.org/obo/uberon/basic.obo
 CL      http://purl.obolibrary.org/obo/cl/cl-basic.obo
 SO      https://github.com/The-Sequence-Ontology/SO-Ontologies/raw/master/Ontology_Files/so-simple.obo
@@ -176,12 +177,24 @@ if [[ $DOWNLOAD -eq 1 ]]; then
             continue
         fi
 
+        printf 'downloading %s ...\n' "$id"
         tmp="$DEST_DIR/.$id.obo.part$$"
-        if ! curl -fsSL --retry 3 --max-time 1800 -o "$tmp" "$url"; then
+        # A transfer slower than 10 KB/s for 2 minutes is treated as stalled.
+        if ! curl -fsSL --retry 2 --connect-timeout 30 --speed-limit 10240 --speed-time 120 \
+                -o "$tmp" "$url"; then
             rm -f "$tmp"
             echo "WARNING  $id: download failed from $url -- keeping the previous file" >&2
             problems=$((problems + 1))
             continue
+        fi
+        if [[ "$url" == *.gz ]]; then
+            if ! gunzip -c "$tmp" > "$tmp.obo"; then
+                rm -f "$tmp" "$tmp.obo"
+                echo "WARNING  $id: could not unpack $url -- keeping the previous file" >&2
+                problems=$((problems + 1))
+                continue
+            fi
+            mv -f "$tmp.obo" "$tmp"
         fi
         # A server can answer 200 with an HTML error page; an ontology has [Term] stanzas.
         if ! grep -q -m1 '^\[Term\]' "$tmp"; then
