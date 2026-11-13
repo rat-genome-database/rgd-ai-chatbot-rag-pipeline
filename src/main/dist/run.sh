@@ -6,8 +6,7 @@
 APPNAME=rgd-ai-chatbot-rag-pipeline
 SERVER=`hostname -s | tr '[a-z]' '[A-Z]'`
 
-#EMAILLIST=mtutaj@mcw.edu,llamers@mcw.edu
-EMAILLIST="mtutaj@mcw.edu llamers@mcw.edu"
+EMAILLIST=rgd.devops@mcw.edu
 
 APPDIR=/home/rgddata/pipelines/$APPNAME
 cd $APPDIR
