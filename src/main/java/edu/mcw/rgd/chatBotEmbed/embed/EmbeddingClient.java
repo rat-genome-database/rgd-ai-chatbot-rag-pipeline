@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -18,7 +19,9 @@ import java.util.List;
  *
  * <ul>
  *   <li><b>openai</b> — {@code POST {baseUrl}/embeddings}, bearer auth, optional
- *       {@code dimensions}; reads {@code data[0].embedding}.</li>
+ *       {@code dimensions}; reads {@code data[].embedding} by {@code index}. One call embeds up
+ *       to {@code batchSize} chunks; each input is embedded independently, so the vectors are
+ *       the same as one request per chunk, at a fraction of the round trips.</li>
  *   <li><b>ollama</b> — {@code POST {baseUrl}/api/embed} with a list of inputs and optional
  *       {@code dimensions}; reads {@code embeddings[]}. One call embeds up to {@code batchSize}
  *       chunks, which on a local GPU costs little more than embedding one.</li>
@@ -35,7 +38,7 @@ public class EmbeddingClient implements Embedder {
     private final String model;
     private final int dimensions;   // 0 = don't send a dimensions override
     private final String apiKey;    // null/empty allowed (e.g. local Ollama)
-    private final int batchSize;    // inputs per Ollama request
+    private final int batchSize;    // inputs per request
     private final HttpClient http;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -58,29 +61,21 @@ public class EmbeddingClient implements Embedder {
         return embedAll(List.of(text)).get(0);
     }
 
-    /**
-     * Embed every text, returning vectors in the same order. Ollama receives them in batches
-     * of {@code batchSize}; OpenAI keeps its one-request-per-chunk behaviour.
-     */
+    /** Embed every text, returning vectors in the same order, {@code batchSize} per request. */
     @Override
     public List<float[]> embedAll(List<String> texts) throws Exception {
         List<float[]> out = new ArrayList<>(texts.size());
-        if ("ollama".equals(provider)) {
-            for (int from = 0; from < texts.size(); from += batchSize) {
-                out.addAll(embedOllama(texts.subList(from, Math.min(texts.size(), from + batchSize))));
-            }
-        } else {
-            for (String text : texts) {
-                out.add(embedOpenAi(text));
-            }
+        for (int from = 0; from < texts.size(); from += batchSize) {
+            List<String> part = texts.subList(from, Math.min(texts.size(), from + batchSize));
+            out.addAll("ollama".equals(provider) ? embedOllama(part) : embedOpenAi(part));
         }
         return out;
     }
 
-    private float[] embedOpenAi(String text) throws Exception {
+    private List<float[]> embedOpenAi(List<String> texts) throws Exception {
         ObjectNode body = mapper.createObjectNode();
         body.put("model", model);
-        body.put("input", text);
+        texts.forEach(body.putArray("input")::add);
         if (dimensions > 0) {
             body.put("dimensions", dimensions);
         }
@@ -92,8 +87,20 @@ public class EmbeddingClient implements Embedder {
         if (apiKey != null && !apiKey.isEmpty()) {
             rb.header("Authorization", "Bearer " + apiKey);
         }
-        JsonNode root = send(rb.build());
-        return checkDimensions(toFloatArray(root.path("data").path(0).path("embedding")));
+        JsonNode data = send(rb.build()).path("data");
+        if (!data.isArray() || data.size() != texts.size()) {
+            throw new RuntimeException("expected " + texts.size() + " embeddings from OpenAI, got "
+                    + (data.isArray() ? data.size() : "none"));
+        }
+        float[][] byIndex = new float[texts.size()][];
+        for (JsonNode d : data) {
+            int i = d.path("index").asInt(-1);
+            if (i < 0 || i >= byIndex.length || byIndex[i] != null) {
+                throw new RuntimeException("bad or repeated embedding index " + i + " from OpenAI");
+            }
+            byIndex[i] = checkDimensions(toFloatArray(d.path("embedding")));
+        }
+        return List.of(byIndex);
     }
 
     private List<float[]> embedOllama(List<String> texts) throws Exception {
@@ -135,12 +142,21 @@ public class EmbeddingClient implements Embedder {
         return v;
     }
 
-    /** Send with retry on 429 / 5xx (exponential backoff, capped). */
+    /** Send with retry on 429 / 5xx and on timeouts or dropped connections (exponential backoff, capped). */
     private JsonNode send(HttpRequest req) throws Exception {
         int attempt = 0;
         while (true) {
             attempt++;
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp;
+            try {
+                resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            } catch (IOException e) {
+                if (attempt < 5) {
+                    Thread.sleep(Math.min(30_000L, 1_000L * (1L << attempt)));
+                    continue;
+                }
+                throw e;
+            }
             int sc = resp.statusCode();
             if (sc >= 200 && sc < 300) {
                 return mapper.readTree(resp.body());

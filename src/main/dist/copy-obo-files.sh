@@ -11,10 +11,18 @@
 # and exactly one is expected per directory -- if a directory has none, or more
 # than one, that is reported rather than guessed at.
 #
+# The ontology load pipeline keeps .obo files only for the ontologies RGD maintains
+# (RDO, PW, CMO, MMO, XCO, RS). The others it loads (GO, MP, HP, VT, CHEBI, ...) are
+# downloaded here from the same sources it uses (its properties/AppConfigure.xml),
+# saved as <ID>.obo. A failed download is reported and the previous file is kept.
+# Not downloaded: ORDO and MI (need a BioPortal API key), NCBITaxon (no public .obo
+# source in that config) and CVCL (Cellosaurus cell lines, not an ontology).
+#
 # Usage:
-#   ./copy-obo-files.sh              copy (skips files that are already identical)
+#   ./copy-obo-files.sh              copy and download (skips files that are already identical)
 #   ./copy-obo-files.sh --dry-run    report what would be copied, write nothing
 #   ./copy-obo-files.sh --force      copy every file even if unchanged
+#   ./copy-obo-files.sh --no-download  copy the local files only
 #   ./copy-obo-files.sh --help
 
 set -euo pipefail
@@ -25,8 +33,28 @@ DEST_DIR="/home/rgddata/pipelines/rgd-ai-chatbot-rag-pipeline/data/markdown/onto
 # A name is "dated" if it carries YYYYMMDD or YYYY-MM-DD anywhere.
 DATE_RE='[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2}'
 
+# Ontologies downloaded from their publishers: <ID> <url>
+DOWNLOADS='
+GO      http://purl.obolibrary.org/obo/go/snapshot/go-basic.obo
+MP      http://www.informatics.jax.org/downloads/reports/MPheno_OBO.ontology
+HP      https://raw.githubusercontent.com/obophenotype/human-phenotype-ontology/master/hp.obo
+VT      https://raw.githubusercontent.com/AnimalGenome/vertebrate-trait-ontology/master/current_release/vt.obo
+CHEBI   ftp://ftp.ebi.ac.uk/pub/databases/chebi/ontology/chebi.obo
+UBERON  http://purl.obolibrary.org/obo/uberon/basic.obo
+CL      http://purl.obolibrary.org/obo/cl/cl-basic.obo
+SO      https://github.com/The-Sequence-Ontology/SO-Ontologies/raw/master/Ontology_Files/so-simple.obo
+MA      http://www.informatics.jax.org/downloads/reports/adult_mouse_anatomy.obo
+NBO     http://purl.obolibrary.org/obo/nbo.obo
+ZFA     http://purl.obolibrary.org/obo/zfa.obo
+MONDO   http://purl.obolibrary.org/obo/mondo/mondo.obo
+EFO     https://www.ebi.ac.uk/efo/efo.obo
+OBA     http://purl.obolibrary.org/obo/oba.obo
+CS      https://download.rgd.mcw.edu/ontology/chinchilla/CS.obo
+'
+
 DRY_RUN=0
 FORCE=0
+DOWNLOAD=1
 
 usage() {
     # Print the header comment block: comment lines from line 3 up to the first
@@ -39,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -n|--dry-run) DRY_RUN=1 ;;
         -f|--force)   FORCE=1 ;;
+        --no-download) DOWNLOAD=0 ;;
         -h|--help)    usage ;;
         *) echo "copy-obo-files.sh: unknown option '$1' (try --help)" >&2; exit 2 ;;
     esac
@@ -134,6 +163,45 @@ for src_dir in "$SRC_ROOT"/*/; do
     printf 'copied     %-24s %s (%s bytes)\n' "$ontology" "$name" "$size"
     copied=$((copied + 1))
 done
+
+if [[ $DOWNLOAD -eq 1 ]]; then
+    echo
+    while read -r id url; do
+        [[ -z "$id" ]] && continue
+        dest="$DEST_DIR/$id.obo"
+
+        if [[ $DRY_RUN -eq 1 ]]; then
+            printf 'would get  %-24s %s\n' "$id" "$url"
+            copied=$((copied + 1))
+            continue
+        fi
+
+        tmp="$DEST_DIR/.$id.obo.part$$"
+        if ! curl -fsSL --retry 3 --max-time 1800 -o "$tmp" "$url"; then
+            rm -f "$tmp"
+            echo "WARNING  $id: download failed from $url -- keeping the previous file" >&2
+            problems=$((problems + 1))
+            continue
+        fi
+        # A server can answer 200 with an HTML error page; an ontology has [Term] stanzas.
+        if ! grep -q -m1 '^\[Term\]' "$tmp"; then
+            rm -f "$tmp"
+            echo "WARNING  $id: $url returned no OBO terms -- keeping the previous file" >&2
+            problems=$((problems + 1))
+            continue
+        fi
+        size="$(stat -Lc %s "$tmp")"
+        if [[ $FORCE -eq 0 && -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
+            rm -f "$tmp"
+            printf 'unchanged  %-24s %s.obo (%s bytes)\n' "$id" "$id" "$size"
+            skipped=$((skipped + 1))
+            continue
+        fi
+        mv -f "$tmp" "$dest"
+        printf 'downloaded %-24s %s.obo (%s bytes)\n' "$id" "$id" "$size"
+        copied=$((copied + 1))
+    done <<< "$DOWNLOADS"
+fi
 
 echo
 if [[ $DRY_RUN -eq 1 ]]; then

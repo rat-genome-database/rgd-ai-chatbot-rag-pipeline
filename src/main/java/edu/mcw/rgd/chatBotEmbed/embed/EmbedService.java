@@ -60,7 +60,7 @@ public class EmbedService {
     private String apiKeyEnv = "OPENAI_API_KEY";
     private String apiKeyFile = "";   // path to a file containing just the API key (takes precedence over the env var)
     private int threadCount = 2;
-    private int batchSize = 32;                // chunks per Ollama request (OpenAI is unbatched)
+    private int batchSize = 32;                // chunks per embeddings request (live embed)
     // rgdcore datasource name: the "<name>DataSource" bean in the connections file, or
     // jdbc/<name> in JNDI. Each index's datasource sets currentSchema to its own schema.
     private String dataSourceName = "rgdRag";

@@ -68,6 +68,13 @@ public class OboReportBuilder {
             case "CL":   return "Cell Ontology";
             case "SO":   return "Sequence Ontology";
             case "NBO":  return "Neuro Behavior Ontology";
+            case "GO":   return "Gene Ontology";
+            case "MA":   return "Mouse Adult Gross Anatomy Ontology";
+            case "ZFA":  return "Zebrafish Anatomy Ontology";
+            case "MONDO": return "Mondo Disease Ontology";
+            case "EFO":  return "Experimental Factor Ontology";
+            case "OBA":  return "Ontology of Biological Attributes";
+            case "CS":   return "Chinchilla Strain Ontology";
             default:     return prefix;
         }
     }
