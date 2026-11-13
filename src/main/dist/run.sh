@@ -20,7 +20,7 @@ java -Dspring.config=$APPDIR/../properties/default_db2.xml \
 
 # Email the summary for whichever mode ran: embed -> embedRun.log, generate -> run.log.
 case "$*" in
-    *"--mode embed"*) MAILLOG=$APPDIR/logs/embedRun.log ;;
+    *"--mode embed"*|*"--mode batch-embed"*) MAILLOG=$APPDIR/logs/embedRun.log ;;
     *)                MAILLOG=$APPDIR/run.log ;;
 esac
 
