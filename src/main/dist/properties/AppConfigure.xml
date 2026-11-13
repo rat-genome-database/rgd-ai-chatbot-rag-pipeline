@@ -78,7 +78,7 @@
         <property name="apiKeyFile" value="properties/openai.key"/>
         <property name="apiKeyEnv" value="OPENAI_API_KEY"/>
 
-        <property name="threadCount" value="8"/>                         <!-- live embeds (OBO, --mode embed); 429s are retried -->
+        <property name="threadCount" value="8"/>                         <!-- live embeds (OBO and "-mode embed"); 429s are retried -->
         <property name="dataSourceName" value="rgdRag"/>                 <!-- rgdRagDataSource bean in the connections file -->
         <property name="expectedSchema" value="public"/>                 <!-- schema that datasource must resolve document_embeddings to -->
 
