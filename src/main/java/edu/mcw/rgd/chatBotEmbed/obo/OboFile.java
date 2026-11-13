@@ -131,81 +131,146 @@ public class OboFile {
         return obo;
     }
 
-    /** Parse one file into {@link #terms}, recording its {@code data-version} header. */
+    /**
+     * Parse one file into {@link #terms}, recording its {@code data-version} header.
+     *
+     * <p>Only the file's own terms are kept (see {@link #ownPrefix}). Files such as EFO, MONDO
+     * and OBA carry thousands of stanzas imported from other ontologies; keeping those would
+     * embed GO or HP terms a second time under another file's name, and on a duplicate
+     * accession could replace the owning ontology's full stanza with a thinner import.</p>
+     */
     private void parse(Path file) throws IOException {
         String ontology = stripExtension(file.getFileName().toString());
-        int before = terms.size();
-        int skippedObsolete = 0;
-
-        List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+        String headerName = null;
+        List<Term> parsed = new ArrayList<>();
         Term current = null;
         boolean inTerm = false;
 
-        for (String raw : lines) {
-            // Files are written with CRLF; readAllLines keeps a stray \r on some platforms.
-            String line = raw.endsWith("\r") ? raw.substring(0, raw.length() - 1) : raw;
+        // Streamed rather than read whole: CHEBI alone is over 250 MB.
+        try (java.io.BufferedReader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String raw;
+            while ((raw = r.readLine()) != null) {
+                // Files are written with CRLF; a stray \r can survive on some platforms.
+                String line = raw.endsWith("\r") ? raw.substring(0, raw.length() - 1) : raw;
 
-            if (line.startsWith("[")) {
-                current = commit(current);
-                // Only [Term] stanzas carry report content; [Typedef]/[Instance] are skipped.
-                inTerm = line.equals("[Term]");
-                if (inTerm) {
-                    current = new Term();
-                    current.sourceOntology = ontology;
+                if (line.startsWith("[")) {
+                    addIfComplete(parsed, current);
+                    current = null;
+                    // Only [Term] stanzas carry report content; [Typedef]/[Instance] are skipped.
+                    inTerm = line.equals("[Term]");
+                    if (inTerm) {
+                        current = new Term();
+                        current.sourceOntology = ontology;
+                    }
+                    continue;
                 }
-                continue;
-            }
-            if (line.isEmpty()) {
-                continue;
-            }
-
-            int colon = line.indexOf(':');
-            if (colon <= 0) {
-                continue;
-            }
-            String tag = line.substring(0, colon);
-            String value = line.substring(colon + 1).trim();
-
-            if (!inTerm) {
-                // Header: the one tag the reports cite.
-                if (tag.equals("data-version")) {
-                    dataVersions.put(ontology, value);
+                if (line.isEmpty()) {
+                    continue;
                 }
+
+                int colon = line.indexOf(':');
+                if (colon <= 0) {
+                    continue;
+                }
+                String tag = line.substring(0, colon);
+                String value = line.substring(colon + 1).trim();
+
+                if (!inTerm) {
+                    // Header: the version the reports cite, and the name that identifies the
+                    // file's own terms.
+                    if (tag.equals("data-version")) {
+                        dataVersions.put(ontology, value);
+                    } else if (tag.equals("ontology") && headerName == null) {
+                        headerName = value;
+                    }
+                    continue;
+                }
+                applyTag(current, tag, value);
+            }
+        }
+        addIfComplete(parsed, current);
+
+        String own = ownPrefix(headerName, parsed);
+        int kept = 0;
+        int imported = 0;
+        int obsolete = 0;
+        for (Term t : parsed) {
+            if (!t.prefix().equalsIgnoreCase(own)) {
+                imported++;
                 continue;
             }
-            applyTag(current, tag, value);
-        }
-        commit(current);
-
-        for (Term t : terms.values()) {
-            if (ontology.equals(t.sourceOntology) && t.obsolete) {
-                skippedObsolete++;
+            commit(t);
+            kept++;
+            if (t.obsolete) {
+                obsolete++;
             }
         }
-        LOG.info("  {}: {} term(s){}", file.getFileName(), terms.size() - before,
-                skippedObsolete > 0 ? " (" + skippedObsolete + " obsolete)" : "");
+        LOG.info("  {}: {} {} term(s){}{}", file.getFileName(), kept, own,
+                obsolete > 0 ? " (" + obsolete + " obsolete)" : "",
+                imported > 0 ? "; " + imported + " imported from other ontologies skipped" : "");
+    }
+
+    private static void addIfComplete(List<Term> parsed, Term t) {
+        if (t != null && t.id != null && !t.id.isBlank()) {
+            parsed.add(t);
+        }
+    }
+
+    /**
+     * The accession prefix of a file's own terms. The {@code ontology:} header names the
+     * ontology ({@code go}, {@code cl/cl-basic}, {@code hp.obo}, or a URL ending
+     * {@code efo.owl}); its last path segment, cut at the first dot or dash, is matched against
+     * the term prefixes. When nothing matches, as in RDO (header {@code rdo}, terms
+     * {@code DOID:}) or a file without the header, the most common prefix is used.
+     */
+    static String ownPrefix(String headerName, List<Term> parsed) {
+        Map<String, Integer> counts = new HashMap<>();
+        for (Term t : parsed) {
+            counts.merge(t.prefix().toUpperCase(), 1, Integer::sum);
+        }
+        if (headerName != null) {
+            String name = headerName.trim();
+            name = name.substring(name.lastIndexOf('/') + 1);
+            int cut = name.length();
+            for (char c : new char[]{'.', '-'}) {
+                int i = name.indexOf(c);
+                if (i > 0 && i < cut) {
+                    cut = i;
+                }
+            }
+            String fromHeader = name.substring(0, cut).toUpperCase();
+            if (counts.containsKey(fromHeader)) {
+                return fromHeader;
+            }
+        }
+        String best = "";
+        int bestCount = -1;
+        for (Map.Entry<String, Integer> e : counts.entrySet()) {
+            if (e.getValue() > bestCount) {
+                best = e.getKey();
+                bestCount = e.getValue();
+            }
+        }
+        return best;
     }
 
     /** Store a finished stanza. Later files win on a duplicate accession, which is also logged. */
-    private Term commit(Term t) {
-        if (t != null && t.id != null && !t.id.isBlank()) {
-            Term prior = terms.put(t.id, t);
-            if (prior != null && !prior.sourceOntology.equals(t.sourceOntology)) {
-                LOG.warn("term {} appears in both {} and {} — keeping {}",
-                        t.id, prior.sourceOntology, t.sourceOntology, t.sourceOntology);
-            }
+    private void commit(Term t) {
+        Term prior = terms.put(t.id, t);
+        if (prior != null && !prior.sourceOntology.equals(t.sourceOntology)) {
+            LOG.warn("term {} appears in both {} and {} — keeping {}",
+                    t.id, prior.sourceOntology, t.sourceOntology, t.sourceOntology);
         }
-        return null;
     }
 
     private void applyTag(Term t, String tag, String value) {
         switch (tag) {
-            case "id":            t.id = value; break;
+            case "id":            t.id = normalizeId(value); break;
             case "name":          t.name = value; break;
             case "comment":       t.comment = value; break;
             case "created_by":    t.createdBy = value; break;
             case "creation_date": t.creationDate = value; break;
-            case "alt_id":        t.altIds.add(value); break;
+            case "alt_id":        t.altIds.add(normalizeId(value)); break;
             case "xref":          t.xrefs.add(value); break;
             case "subset":        t.subsets.add(value); break;
             case "is_obsolete":   t.obsolete = value.equalsIgnoreCase("true"); break;
@@ -256,9 +321,18 @@ public class OboFile {
     private static TermRef parseRef(String value, String type) {
         int bang = value.indexOf('!');
         if (bang < 0) {
-            return new TermRef(value.trim(), null, type);
+            return new TermRef(normalizeId(value.trim()), null, type);
         }
-        return new TermRef(value.substring(0, bang).trim(), value.substring(bang + 1).trim(), type);
+        return new TermRef(normalizeId(value.substring(0, bang).trim()), value.substring(bang + 1).trim(), type);
+    }
+
+    /** EFO writes {@code efo:EFO_0000001}; RGD and every other file use {@code EFO:0000001}. */
+    private static final java.util.regex.Pattern NAMESPACED_ID =
+            java.util.regex.Pattern.compile("^[A-Za-z]+:([A-Za-z]+)_(\\d+)$");
+
+    static String normalizeId(String id) {
+        java.util.regex.Matcher m = NAMESPACED_ID.matcher(id);
+        return m.matches() ? m.group(1) + ":" + m.group(2) : id;
     }
 
     /** The first double-quoted run of a value, or null when it is not quoted. */
