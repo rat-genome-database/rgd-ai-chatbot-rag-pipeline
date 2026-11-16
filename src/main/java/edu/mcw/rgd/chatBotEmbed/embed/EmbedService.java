@@ -174,6 +174,7 @@ public class EmbedService {
                 LOG.error("  FAILED: {}", f);
             }
         }
+        writer.analyzeIfChanged();
     }
 
     /**
@@ -266,6 +267,7 @@ public class EmbedService {
                 LOG.error("  FAILED: {}", t);
             }
         }
+        writer.analyzeIfChanged();
     }
 
     /**
@@ -306,6 +308,7 @@ public class EmbedService {
                 roots, expectedSchema, species == null ? "all" : species, model, dimensions);
         new BatchEmbedRun(this, embeddingDAO, writer, new OpenAiBatchClient(baseUrl, resolveApiKey()), force)
                 .run(files);
+        writer.analyzeIfChanged();
     }
 
     /**

@@ -1,11 +1,16 @@
 package edu.mcw.rgd.chatBotEmbed.embed;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import javax.sql.DataSource;
 import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLWarning;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.util.ArrayList;
@@ -23,6 +28,23 @@ import java.util.List;
  * and cast with {@code ::vector}.</p>
  */
 public class EmbeddingWriter {
+
+    private static final Logger LOG = LogManager.getLogger("embed");
+
+    /**
+     * Rows a table may have had inserted, updated or deleted since its last ANALYZE before an
+     * embed run analyzes it itself. Autovacuum analyzes only once 10% of a table has changed -
+     * some 670,000 rows of document_embeddings - so after a large load the planner would go on
+     * planning searches from the old statistics until then, or until the weekly maintenance.
+     */
+    static final long ANALYZE_AFTER_CHANGED_ROWS = 50_000;
+
+    /** The tables an embed run writes: the chunks, and the object lookups filled alongside them. */
+    private static final List<String> WRITTEN_TABLES =
+            List.of("document_embeddings", "report_object", "report_position");
+
+    private static final String CHANGED_SINCE_ANALYZE_SQL =
+            "SELECT n_mod_since_analyze FROM pg_stat_user_tables WHERE relid = to_regclass(?)";
 
     private static final String INSERT_SQL =
             "INSERT INTO document_embeddings (embedding, chunk, file_name, created_at, rgd_id, section) "
@@ -96,6 +118,46 @@ public class EmbeddingWriter {
         if (expectedDimensions > 0 && !vectorType.equals("vector(" + expectedDimensions + ")")) {
             throw new IllegalStateException(schema + ".document_embeddings.embedding is " + vectorType
                     + " but the embed config produces " + expectedDimensions + "-dim vectors");
+        }
+    }
+
+    /**
+     * ANALYZE each table this run wrote, where at least {@link #ANALYZE_AFTER_CHANGED_ROWS} rows
+     * changed since its statistics were last gathered; routine runs change far fewer and skip it.
+     *
+     * <p>Never fails the run: the embeddings are written either way, and the tables would be
+     * analyzed later by autovacuum or the weekly maintenance. Only a table's owner may analyze it,
+     * and Postgres answers anyone else with a warning rather than an error, so that is logged.</p>
+     */
+    public void analyzeIfChanged() {
+        for (String table : WRITTEN_TABLES) {
+            try (Connection con = dataSource.getConnection()) {
+                long changed;
+                try (PreparedStatement ps = con.prepareStatement(CHANGED_SINCE_ANALYZE_SQL)) {
+                    ps.setString(1, table);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            continue;   // not on this datasource's search path
+                        }
+                        changed = rs.getLong(1);
+                    }
+                }
+                if (changed < ANALYZE_AFTER_CHANGED_ROWS) {
+                    LOG.info("{}: {} row(s) changed since its last ANALYZE; not analyzing", table, changed);
+                    continue;
+                }
+                long start = System.currentTimeMillis();
+                try (Statement st = con.createStatement()) {
+                    st.execute("ANALYZE " + table);
+                    for (SQLWarning w = st.getWarnings(); w != null; w = w.getNextWarning()) {
+                        LOG.warn("ANALYZE {}: {}", table, w.getMessage());
+                    }
+                }
+                LOG.info("{}: {} row(s) changed since its last ANALYZE; analyzed in {} s",
+                        table, changed, (System.currentTimeMillis() - start) / 1000);
+            } catch (SQLException e) {
+                LOG.warn("Could not ANALYZE {}: {}", table, e.getMessage());
+            }
         }
     }
 
