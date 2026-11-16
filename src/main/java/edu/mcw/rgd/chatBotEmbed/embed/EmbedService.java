@@ -771,10 +771,15 @@ public class EmbedService {
         return null;
     }
 
-    /** Pull the display name from the leading {@code <!-- file_name: ... -->} comment. */
+    /**
+     * Pull the display name from the leading {@code <!-- file_name: ... -->} comment. The comment
+     * ends at the last "-->" on the first line: names can contain one, as ChEBI's
+     * "beta-D-Glcp-(1-->4)-..." do.
+     */
     static String resolveDisplayName(String content, String fallback) {
         if (content.startsWith("<!-- file_name:")) {
-            int end = content.indexOf("-->");
+            int lineEnd = content.indexOf('\n');
+            int end = (lineEnd < 0 ? content : content.substring(0, lineEnd)).lastIndexOf("-->");
             if (end > 0) {
                 String name = content.substring("<!-- file_name:".length(), end).trim();
                 if (!name.isEmpty()) {
